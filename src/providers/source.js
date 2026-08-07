@@ -85,12 +85,12 @@ async function searchMovieBox(ctx) {
 }
 
 async function getStreams(ctx) {
-  try {
-    const match = await searchMovieBox(ctx);
-
-    if (!match) {
-      return [];
-    }
+  return [{
+    name: "Project12 Resolver",
+    title: `Resolver loaded: ${ctx.meta?.name || ctx.imdbId}`,
+    url: "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4"
+  }];
+}
 
     const year =
       String(match.releaseDate || "").slice(0, 4) || "?";
