@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: nuvio-project12
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ENABLE_DEMO
+        value: "true"

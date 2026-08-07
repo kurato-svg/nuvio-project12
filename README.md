@@ -1,108 +1,45 @@
-# UWU Streams
+# nuvio-project12
 
-Minimal Stremio addon that plugs into Cinemeta items and provides only:
+Phone-first Nuvio addon project.
 
-- `stream`
-- `subtitles`
+This addon uses the Stremio Addon Protocol and provides only:
 
-No custom catalog or meta resource is included.
+- streams
+- subtitles
 
-## Cinemeta IDs
+It does not provide catalog or metadata. Cinemeta supplies the IMDb IDs and metadata.
+
+## ID format
 
 Movie:
 
-```text
 tt1254207
-```
 
 Series episode:
 
-```text
 tt0944947:1:3
-```
 
-The addon manifest uses `idPrefixes: ["tt"]`.
+## Phone-only setup
 
-## Requirements
+1. Create a GitHub repository named `nuvio-project12`.
+2. Extract this ZIP on your phone.
+3. Upload every file and folder inside `nuvio-project12` to the repository.
+4. Commit to the `main` branch.
+5. Open the GitHub Actions tab and check that `Project12 CI` passes.
+6. Connect the repository to Render.
+7. Render reads `render.yaml` and runs the addon as a Node.js Web Service.
+8. After deployment, your manifest will be:
 
-- Node.js 18 or newer
-- npm
+   https://YOUR-RENDER-HOST/manifest.json
 
-## Local run
+9. Add that manifest URL in Nuvio.
 
-```bash
-npm install
-npm start
-```
+## Demo
 
-Install locally in Stremio with:
+The Render configuration enables a legal demo stream for IMDb ID `tt1254207`
+(Big Buck Bunny). This is only to confirm that Nuvio can talk to the addon.
 
-```text
-http://127.0.0.1:7000/manifest.json
-```
+## Real provider
 
-For a remote deployment, Stremio requires HTTPS.
-
-## Demo check
-
-The demo provider is disabled by default.
-
-Enable it:
-
-Linux/macOS:
-
-```bash
-ENABLE_DEMO=true npm start
-```
-
-Windows PowerShell:
-
-```powershell
-$env:ENABLE_DEMO="true"
-npm start
-```
-
-Then open Cinemeta's Big Buck Bunny (`tt1254207`). A sample stream should appear as `UWU Demo`.
-
-## Provider flow
-
-```text
-Stremio Cinemeta item
-        |
-        v
-movie:  tt1234567
-series: tt1234567:1:2
-        |
-        v
-parseCinemetaId()
-        |
-        v
-Cinemeta metadata lookup
-        |
-        v
-provider.getStreams(ctx)
-provider.getSubtitles(ctx)
-        |
-        v
-Stremio
-```
-
-## TheMovieBox provider boundary
-
-`src/providers/themoviebox.js` is prepared as a provider module.
-
-Connect it only to media/API endpoints that you are authorised to use. It receives Cinemeta metadata plus IMDb ID, season, and episode, so provider-specific matching does not need a custom Stremio catalog.
-
-## GitHub Actions
-
-`.github/workflows/ci.yml` automatically runs:
-
-1. `npm install`
-2. syntax checks
-3. unit tests
-
-A deployment job can be added after choosing the hosting target.
-
-## Remote hosting
-
-GitHub Actions can build and test the addon, but the addon itself needs an always-available HTTPS server. The included `Dockerfile` can be used on a Node/Docker hosting service.
+`src/providers/source.js` is intentionally empty. Connect only stream and subtitle
+sources that you are authorised to access and serve.

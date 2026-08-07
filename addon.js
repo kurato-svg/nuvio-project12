@@ -3,10 +3,10 @@ const { getStreams } = require("./src/streams");
 const { getSubtitles } = require("./src/subtitles");
 
 const manifest = {
-  id: "com.uwu.streams",
+  id: "com.project12.nuvio",
   version: "0.1.0",
-  name: "UWU Streams",
-  description: "Stream and subtitle addon for Cinemeta IMDb IDs",
+  name: "Nuvio Project12",
+  description: "Streams and subtitles for Cinemeta IMDb IDs",
   resources: ["stream", "subtitles"],
   types: ["movie", "series"],
   catalogs: [],
@@ -18,8 +18,8 @@ const builder = new addonBuilder(manifest);
 builder.defineStreamHandler(async ({ type, id }) => {
   try {
     return { streams: await getStreams(type, id) };
-  } catch (err) {
-    console.error("[stream]", type, id, err.message);
+  } catch (error) {
+    console.error("[stream]", type, id, error.message);
     return { streams: [] };
   }
 });
@@ -27,8 +27,8 @@ builder.defineStreamHandler(async ({ type, id }) => {
 builder.defineSubtitlesHandler(async ({ type, id }) => {
   try {
     return { subtitles: await getSubtitles(type, id) };
-  } catch (err) {
-    console.error("[subtitles]", type, id, err.message);
+  } catch (error) {
+    console.error("[subtitles]", type, id, error.message);
     return { subtitles: [] };
   }
 });

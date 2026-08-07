@@ -1,12 +1,12 @@
 {
-  "name": "uwu-stremio-streams",
+  "name": "nuvio-project12",
   "version": "0.1.0",
   "private": true,
-  "description": "Stremio stream + subtitles addon for Cinemeta IMDb IDs",
+  "description": "Nuvio-compatible Stremio addon providing streams and subtitles for Cinemeta IMDb IDs",
   "main": "addon.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check addon.js && node --check server.js && node --check src/id.js && node --check src/cinemeta.js && node --check src/streams.js && node --check src/subtitles.js && node --check src/providers/demo.js && node --check src/providers/themoviebox.js",
+    "check": "node --check addon.js && node --check server.js && node --check src/id.js && node --check src/cinemeta.js && node --check src/streams.js && node --check src/subtitles.js && node --check src/providers/demo.js && node --check src/providers/source.js",
     "test": "node test.js"
   },
   "engines": {
