@@ -1,4 +1,4 @@
-name: Stremio Addon CI
+name: Project12 CI
 
 on:
   push:
@@ -20,7 +20,7 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Install dependencies
+      - name: Install
         run: npm install
 
       - name: Syntax check
