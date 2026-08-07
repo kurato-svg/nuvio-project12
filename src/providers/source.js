@@ -56,7 +56,6 @@ async function searchMovieBox(ctx) {
   }
 
   const json = await response.json();
-
   const items = json?.data?.items || [];
 
   const wantedTitle = normalise(title);
@@ -75,9 +74,7 @@ async function searchMovieBox(ctx) {
   }
 
   const exactYear = candidates.find(item => {
-    const itemYear =
-      String(item.releaseDate || "").slice(0, 4);
-
+    const itemYear = String(item.releaseDate || "").slice(0, 4);
     return wantedYear && itemYear === wantedYear;
   });
 
@@ -85,22 +82,19 @@ async function searchMovieBox(ctx) {
 }
 
 async function getStreams(ctx) {
-  return [{
-    name: "Project12 Resolver",
-    title: `Resolver loaded: ${ctx.meta?.name || ctx.imdbId}`,
-    url: "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4"
-  }];
-}
+  try {
+    const match = await searchMovieBox(ctx);
 
-    const year =
-      String(match.releaseDate || "").slice(0, 4) || "?";
+    if (!match) {
+      return [];
+    }
+
+    const year = String(match.releaseDate || "").slice(0, 4) || "?";
 
     return [{
       name: "Project12 Resolver",
-      title:
-        `Matched: ${match.title} (${year}) • ID ${match.subjectId}`,
-      url:
-        "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4"
+      title: `Matched: ${match.title} (${year}) • ID ${match.subjectId}`,
+      url: "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4"
     }];
 
   } catch (error) {
