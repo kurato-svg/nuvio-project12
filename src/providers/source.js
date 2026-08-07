@@ -1,4 +1,4 @@
-const SEARCH_URL = "https://moviebox.ng/wefeed-h5-bff/web/subject/search";
+const SEARCH_URL = "https://h5.aoneroom.com/wefeed-h5-bff/web/subject/search";
 
 function normalise(value = "") {
   return String(value)
