@@ -1,14 +1,13 @@
 async function getStreams(ctx) {
   if (process.env.ENABLE_DEMO !== "true") return [];
 
-  if (ctx.type === "movie" && ctx.imdbId === "tt1254207") {
-    return [{
-      name: "Project12 Demo",
-      title: "Big Buck Bunny • 1080p demo",
-      url: "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4"
-    }];
+  if (ctx.type === "movie" && ctx.imdbId === "tt2245084") {
+  return [{
+    name: "Project12 Demo",
+    title: "Project12 connection test",
+    url: "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4"
+  }];
   }
-
   return [];
 }
 
