@@ -12,13 +12,32 @@ const SUB_KEY_API =
 const USER_AGENT =
   "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0 Mobile Safari/537.36";
 
-const LOOKUP_TTL = 6 * 60 * 60 * 1000;
-const STREAM_TTL = 2 * 60 * 1000;
-const SUBTITLE_TTL = 10 * 60 * 1000;
+const LOOKUP_TTL =
+  6 * 60 * 60 * 1000;
 
-const lookupCache = new Map();
-const streamCache = new Map();
-const subtitleCache = new Map();
+const STREAM_TTL =
+  2 * 60 * 1000;
+
+const SUBTITLE_TTL =
+  10 * 60 * 1000;
+
+const lookupCache =
+  new Map();
+
+const streamCache =
+  new Map();
+
+const subtitleCache =
+  new Map();
+
+const sessionCookies =
+  new Map();
+
+const warmedBases =
+  new Set();
+
+const warmingBases =
+  new Map();
 
 
 function cacheKey(ctx) {
@@ -37,7 +56,8 @@ async function memo(
   ttl,
   loader
 ) {
-  const now = Date.now();
+  const now =
+    Date.now();
 
   const hit =
     cache.get(key);
@@ -74,58 +94,370 @@ async function memo(
 }
 
 
+function getBaseFromUrl(url) {
+  try {
+    const host =
+      new URL(url).host;
+
+    return (
+      BASES.find(
+        base =>
+          new URL(base).host ===
+          host
+      ) ||
+      null
+    );
+
+  } catch {
+    return null;
+  }
+}
+
+
+function mergeCookies(
+  current,
+  incoming
+) {
+  const jar =
+    new Map();
+
+  for (
+    const raw
+    of [
+      current,
+      incoming
+    ]
+  ) {
+    if (!raw) {
+      continue;
+    }
+
+    for (
+      const part
+      of raw.split(";")
+    ) {
+      const item =
+        part.trim();
+
+      const index =
+        item.indexOf("=");
+
+      if (
+        index <= 0
+      ) {
+        continue;
+      }
+
+      const name =
+        item
+          .slice(
+            0,
+            index
+          )
+          .trim();
+
+      const value =
+        item
+          .slice(
+            index + 1
+          )
+          .trim();
+
+      jar.set(
+        name,
+        value
+      );
+    }
+  }
+
+  return [
+    ...jar.entries()
+  ]
+    .map(
+      ([name, value]) =>
+        `${name}=${value}`
+    )
+    .join("; ");
+}
+
+
+function saveCookies(
+  base,
+  response
+) {
+  if (
+    !base ||
+    !response?.headers
+  ) {
+    return;
+  }
+
+  let cookies = [];
+
+  if (
+    typeof response.headers
+      .getSetCookie ===
+    "function"
+  ) {
+    cookies =
+      response.headers
+        .getSetCookie();
+
+  } else {
+    const cookie =
+      response.headers.get(
+        "set-cookie"
+      );
+
+    if (cookie) {
+      cookies = [
+        cookie
+      ];
+    }
+  }
+
+  for (
+    const value
+    of cookies
+  ) {
+    const pair =
+      String(value)
+        .split(";")[0]
+        .trim();
+
+    if (!pair) {
+      continue;
+    }
+
+    sessionCookies.set(
+      base,
+      mergeCookies(
+        sessionCookies.get(
+          base
+        ) || "",
+        pair
+      )
+    );
+  }
+}
+
+
+async function warmBase(base) {
+  if (
+    warmedBases.has(base)
+  ) {
+    return;
+  }
+
+  if (
+    warmingBases.has(base)
+  ) {
+    return warmingBases.get(
+      base
+    );
+  }
+
+  const task =
+    (async () => {
+      const controller =
+        new AbortController();
+
+      const timer =
+        setTimeout(
+          () =>
+            controller.abort(),
+          7000
+        );
+
+      try {
+        const response =
+          await fetch(
+            `${base}/`,
+            {
+              signal:
+                controller.signal,
+
+              redirect:
+                "follow",
+
+              headers: {
+                Accept:
+                  "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+
+                "Accept-Language":
+                  "en-US,en;q=0.9",
+
+                "Cache-Control":
+                  "no-cache",
+
+                Pragma:
+                  "no-cache",
+
+                "Upgrade-Insecure-Requests":
+                  "1",
+
+                "User-Agent":
+                  USER_AGENT
+              }
+            }
+          );
+
+        saveCookies(
+          base,
+          response
+        );
+
+        console.log(
+          `[kisskh warm] ${base} HTTP ${response.status}`
+        );
+
+      } catch (error) {
+        console.warn(
+          `[kisskh warm failed] ${base}`,
+          error?.message ||
+          error
+        );
+
+      } finally {
+        clearTimeout(
+          timer
+        );
+
+        warmedBases.add(
+          base
+        );
+
+        warmingBases.delete(
+          base
+        );
+      }
+    })();
+
+  warmingBases.set(
+    base,
+    task
+  );
+
+  return task;
+}
+
+
 async function requestText(
   url,
   options = {},
-  timeoutMs = 7000
+  timeoutMs = 7000,
+  allowRetry = true
 ) {
-  const controller =
-    new AbortController();
-
-  const timer =
-    setTimeout(
-      () =>
-        controller.abort(),
-
-      timeoutMs
+  const base =
+    getBaseFromUrl(
+      url
     );
 
-  try {
-    const response =
-      await fetch(
-        url,
-        {
-          ...options,
+  const doRequest =
+    async () => {
+      const controller =
+        new AbortController();
 
-          signal:
-            controller.signal,
+      const timer =
+        setTimeout(
+          () =>
+            controller.abort(),
+          timeoutMs
+        );
 
-          redirect:
-            "follow",
+      try {
+        const cookie =
+          base
+            ? sessionCookies.get(
+                base
+              )
+            : null;
 
-          headers: {
-            Accept:
-              "*/*",
+        const response =
+          await fetch(
+            url,
+            {
+              ...options,
 
-            "User-Agent":
-              USER_AGENT,
+              signal:
+                controller.signal,
 
-            ...(options.headers || {})
-          }
-        }
-      );
+              redirect:
+                "follow",
 
-    if (!response.ok) {
-      throw new Error(
-        `HTTP ${response.status}: ${url}`
-      );
-    }
+              headers: {
+                Accept:
+                  "*/*",
 
-    return response.text();
+                "Accept-Language":
+                  "en-US,en;q=0.9",
 
-  } finally {
-    clearTimeout(timer);
+                "Cache-Control":
+                  "no-cache",
+
+                Pragma:
+                  "no-cache",
+
+                "User-Agent":
+                  USER_AGENT,
+
+                ...(cookie
+                  ? {
+                      Cookie:
+                        cookie
+                    }
+                  : {}),
+
+                ...(options.headers || {})
+              }
+            }
+          );
+
+        saveCookies(
+          base,
+          response
+        );
+
+        return response;
+
+      } finally {
+        clearTimeout(
+          timer
+        );
+      }
+    };
+
+  let response =
+    await doRequest();
+
+  if (
+    response.status === 403 &&
+    base &&
+    allowRetry
+  ) {
+    console.warn(
+      `[kisskh 403] warm and retry ${base}`
+    );
+
+    warmedBases.delete(
+      base
+    );
+
+    await warmBase(
+      base
+    );
+
+    response =
+      await doRequest();
   }
+
+  if (!response.ok) {
+    throw new Error(
+      `HTTP ${response.status}: ${url}`
+    );
+  }
+
+  return response.text();
 }
 
 
@@ -200,12 +532,17 @@ function slug(value) {
 
 function getYear(ctx) {
   const year =
-    Number(ctx.year);
+    Number(
+      ctx?.year
+    );
 
-  return Number.isInteger(year)
+  return Number.isInteger(
+    year
+  )
     ? year
     : null;
 }
+
 
 function getTitle(ctx) {
   return String(
@@ -214,6 +551,7 @@ function getTitle(ctx) {
     ""
   ).trim();
 }
+
 
 function searchQueries(ctx) {
   const title =
@@ -228,8 +566,11 @@ function searchQueries(ctx) {
   ];
 
   if (
-    ctx.type === "series" &&
-    Number(ctx.season) > 1
+    ctx.type ===
+      "series" &&
+    Number(
+      ctx.season
+    ) > 1
   ) {
     queries.unshift(
       `${title} Season ${ctx.season}`
@@ -258,14 +599,25 @@ async function searchBase(
       url,
       {
         headers: {
+          Accept:
+            "application/json, text/plain, */*",
+
           Referer:
-            `${base}/`
+            `${base}/`,
+
+          Origin:
+            base,
+
+          "X-Requested-With":
+            "XMLHttpRequest"
         }
       }
     );
 
   const items =
-    Array.isArray(json)
+    Array.isArray(
+      json
+    )
       ? json
       : [];
 
@@ -276,6 +628,7 @@ async function searchBase(
   return items.map(
     item => ({
       ...item,
+
       _base:
         base
     })
@@ -351,26 +704,38 @@ function searchScore(
     score += 100;
 
   } else if (
-    found.startsWith(wanted) ||
-    wanted.startsWith(found)
+    found.startsWith(
+      wanted
+    ) ||
+    wanted.startsWith(
+      found
+    )
   ) {
     score += 70;
 
   } else if (
-    found.includes(wanted) ||
-    wanted.includes(found)
+    found.includes(
+      wanted
+    ) ||
+    wanted.includes(
+      found
+    )
   ) {
     score += 50;
   }
 
   if (
-    ctx.type === "series" &&
-    Number(ctx.season) > 1
+    ctx.type ===
+      "series" &&
+    Number(
+      ctx.season
+    ) > 1
   ) {
     const raw =
       String(
         item?.title || ""
-      ).toLowerCase();
+      )
+        .toLowerCase();
 
     if (
       raw.includes(
@@ -409,16 +774,26 @@ async function loadDetail(item) {
       url,
       {
         headers: {
+          Accept:
+            "application/json, text/plain, */*",
+
           Referer:
             `${base}/Drama/` +
             `${slug(title)}` +
-            `?id=${item.id}`
+            `?id=${item.id}`,
+
+          Origin:
+            base,
+
+          "X-Requested-With":
+            "XMLHttpRequest"
         }
       }
     );
 
   return {
     ...detail,
+
     _base:
       base
   };
@@ -454,7 +829,8 @@ function detailScore(
         0,
         4
       )
-    ) || null;
+    ) ||
+    null;
 
   let score = 0;
 
@@ -468,8 +844,12 @@ function detailScore(
       score += 100;
 
     } else if (
-      found.includes(wanted) ||
-      wanted.includes(found)
+      found.includes(
+        wanted
+      ) ||
+      wanted.includes(
+        found
+      )
     ) {
       score += 55;
     }
@@ -480,8 +860,7 @@ function detailScore(
     foundYear
   ) {
     score +=
-      wantedYear ===
-        foundYear
+      wantedYear === foundYear
         ? 30
         : -15;
   }
@@ -579,7 +958,9 @@ async function resolveEpisode(ctx) {
       const queries =
         searchQueries(ctx);
 
-      if (!queries.length) {
+      if (
+        !queries.length
+      ) {
         throw new Error(
           "Cinemeta title missing"
         );
@@ -612,18 +993,24 @@ async function resolveEpisode(ctx) {
           of result.value
         ) {
           const idKey =
-            `${item._base}:` +
-            `${item.id}`;
+            `${item._base}:${item.id}`;
 
           if (
             !item?.id ||
-            seen.has(idKey)
+            seen.has(
+              idKey
+            )
           ) {
             continue;
           }
 
-          seen.add(idKey);
-          candidates.push(item);
+          seen.add(
+            idKey
+          );
+
+          candidates.push(
+            item
+          );
         }
       }
 
@@ -650,7 +1037,10 @@ async function resolveEpisode(ctx) {
       const detailResults =
         await Promise.allSettled(
           candidates
-            .slice(0, 6)
+            .slice(
+              0,
+              6
+            )
             .map(
               loadDetail
             )
@@ -698,7 +1088,9 @@ async function resolveEpisode(ctx) {
           ctx
         );
 
-      if (!episode?.id) {
+      if (
+        !episode?.id
+      ) {
         throw new Error(
           `KissKH episode not found: ` +
           `${ctx.season || 0}x` +
@@ -755,7 +1147,9 @@ async function fetchKey(
       9000
     );
 
-  if (!json?.key) {
+  if (
+    !json?.key
+  ) {
     throw new Error(
       "KissKH key missing"
     );
@@ -770,7 +1164,7 @@ function detectQuality(url) {
     String(
       url || ""
     ).match(
-      /(?:^|[^0-9])(2160|1440|1080|720)p?(?:[^0-9]|$)/i
+      /(?:^|[^0-9])(2160|1440|1080|720|576|540|480|360|240)p?(?:[^0-9]|$)/i
     );
 
   return match
@@ -781,163 +1175,49 @@ function detectQuality(url) {
 }
 
 
-function absoluteUrl(
-  value,
-  base
-) {
-  try {
-    return new URL(
-      value,
-      base
-    ).toString();
-
-  } catch {
-    return null;
-  }
-}
-
-
-async function expandHls(
-  url,
-  base
-) {
-  const text =
-    await requestText(
-      url,
-      {
-        headers: {
-          Referer:
-            `${base}/`,
-
-          Origin:
-            base
-        }
-      },
-      6000
-    );
-
-  const lines =
-    text.split(
-      /\r?\n/
-    );
-
-  const variants = [];
-
-  for (
-    let i = 0;
-    i < lines.length;
-    i++
-  ) {
-    const line =
-      lines[i].trim();
-
-    if (
-      !line.startsWith(
-        "#EXT-X-STREAM-INF:"
-      )
-    ) {
-      continue;
-    }
-
-    const heightMatch =
-      line.match(
-        /RESOLUTION=\d+x(\d+)/i
-      );
-
-    const quality =
-      heightMatch
-        ? Number(
-            heightMatch[1]
-          )
-        : null;
-
-    let next =
-      i + 1;
-
-    while (
-      next <
-        lines.length &&
-      (
-        !lines[next].trim() ||
-        lines[
-          next
-        ]
-          .trim()
-          .startsWith("#")
-      )
-    ) {
-      next++;
-    }
-
-    const variantUrl =
-      next <
-        lines.length
-        ? absoluteUrl(
-            lines[next].trim(),
-            url
-          )
-        : null;
-
-    if (
-      variantUrl &&
-      quality &&
-      quality >= 720
-    ) {
-      variants.push({
-        url:
-          variantUrl,
-
-        quality
-      });
-    }
-  }
-
-  if (
-    variants.length
-  ) {
-    return variants;
-  }
-
-  const quality =
-    detectQuality(url);
-
-  if (
-    quality &&
-    quality >= 720
-  ) {
-    return [{
-      url,
-      quality
-    }];
-  }
-
-  console.log(
-    "[kisskh hls] quality unknown or below 720",
-    url.slice(
-      0,
-      120
-    )
-  );
-
-  return [];
-}
-
-
 function streamObject(
   base,
   url,
-  quality
+  label = null
 ) {
+  const quality =
+    detectQuality(
+      url
+    );
+
+  const display =
+    label ||
+    (
+      quality
+        ? `${quality}p`
+
+        : /\.m3u8(?:\?|$)/i.test(
+            url
+          )
+          ? "HLS"
+
+          : /\.mp4(?:\?|$)/i.test(
+              url
+            )
+            ? "MP4"
+
+            : "Stream"
+    );
+
   return {
     name:
-      `KissKH • ${quality}p`,
+      `KissKH • ${display}`,
 
     title:
-      `KissKH • ${quality}p`,
+      `KissKH • ${display}`,
 
     url,
 
-    quality,
+    ...(quality
+      ? {
+          quality
+        }
+      : {}),
 
     behaviorHints: {
       notWebReady:
@@ -994,8 +1274,17 @@ async function resolveStreams(ctx) {
       videoApi,
       {
         headers: {
+          Accept:
+            "application/json, text/plain, */*",
+
           Referer:
-            referer
+            referer,
+
+          Origin:
+            base,
+
+          "X-Requested-With":
+            "XMLHttpRequest"
         }
       },
       10000
@@ -1021,104 +1310,49 @@ async function resolveStreams(ctx) {
     )
   );
 
-  const links = [
-    source?.Video,
-    source?.ThirdParty
-  ]
-    .filter(
-      value =>
-        typeof value ===
-          "string" &&
-        value.trim()
-    )
-
-    .map(
-      value =>
-        value.trim()
-    );
-
   const output = [];
 
   for (
     const link
-    of links
+    of [
+      source?.Video,
+      source?.ThirdParty
+    ]
   ) {
     if (
-      /\.m3u8(?:\?|$)/i.test(
-        link
-      )
+      typeof link !==
+        "string" ||
+      !link.trim()
     ) {
-      try {
-        const variants =
-          await expandHls(
-            link,
-            base
-          );
-
-        output.push(
-          ...variants.map(
-            item =>
-              streamObject(
-                base,
-                item.url,
-                item.quality
-              )
-          )
-        );
-
-      } catch (error) {
-        console.warn(
-          "[kisskh hls failed]",
-          error.message
-        );
-      }
-
       continue;
     }
 
+    const url =
+      link.trim();
+
     if (
-      /\.mp4(?:\?|$)/i.test(
-        link
+      /\.(m3u8|mp4)(?:\?|$)/i.test(
+        url
       )
     ) {
-      const quality =
-        detectQuality(
-          link
-        );
-
-      if (
-        quality &&
-        quality >= 720
-      ) {
-        output.push(
-          streamObject(
-            base,
-            link,
-            quality
-          )
-        );
-
-      } else {
-        console.log(
-          "[kisskh mp4] quality unknown or below 720",
-          link.slice(
-            0,
-            120
-          )
-        );
-      }
+      output.push(
+        streamObject(
+          base,
+          url
+        )
+      );
 
       continue;
     }
 
     if (
       /^https?:\/\//i.test(
-        link
+        url
       )
     ) {
       console.log(
         "[kisskh third-party pending extractor]",
-        link.slice(
+        url.slice(
           0,
           180
         )
@@ -1166,9 +1400,7 @@ function subtitleLanguage(
 }
 
 
-async function resolveSubtitles(
-  ctx
-) {
+async function resolveSubtitles(ctx) {
   const episode =
     await resolveEpisode(
       ctx
@@ -1190,113 +1422,16 @@ async function resolveSubtitles(
       `?kkey=${encodeURIComponent(kkey)}`,
       {
         headers: {
+          Accept:
+            "application/json, text/plain, */*",
+
           Referer:
-            `${base}/`
+            `${base}/`,
+
+          Origin:
+            base,
+
+          "X-Requested-With":
+            "XMLHttpRequest"
         }
       },
-      10000
-    );
-
-  if (
-    !Array.isArray(
-      subtitles
-    )
-  ) {
-    return [];
-  }
-
-  return subtitles
-
-    .map(
-      (
-        subtitle,
-        index
-      ) => ({
-        id:
-          `kisskh-${episode.epsId}-${index}`,
-
-        lang:
-          subtitleLanguage(
-            subtitle?.label
-          ),
-
-        url:
-          subtitle?.src
-      })
-    )
-
-    .filter(
-      subtitle =>
-        typeof subtitle.url ===
-          "string" &&
-        /^https?:\/\//i.test(
-          subtitle.url
-        ) &&
-        !/\.txt(?:\?|$)/i.test(
-          subtitle.url
-        )
-    );
-}
-
-
-async function getStreams(ctx) {
-  const key =
-    cacheKey(ctx);
-
-  try {
-    return await memo(
-      streamCache,
-      key,
-      STREAM_TTL,
-      () =>
-        resolveStreams(
-          ctx
-        )
-    );
-
-  } catch (error) {
-    console.error(
-      "[kisskh streams]",
-      error?.message ||
-      error
-    );
-
-    return [];
-  }
-}
-
-
-async function getSubtitles(ctx) {
-  const key =
-    cacheKey(ctx);
-
-  try {
-    return await memo(
-      subtitleCache,
-      key,
-      SUBTITLE_TTL,
-      () =>
-        resolveSubtitles(
-          ctx
-        )
-    );
-
-  } catch (error) {
-    console.error(
-      "[kisskh subtitles]",
-      error?.message ||
-      error
-    );
-
-    return [];
-  }
-}
-
-
-module.exports = {
-  name:
-    "KissKH",
-
-  getStreams,
-  getSubtitles
-};
