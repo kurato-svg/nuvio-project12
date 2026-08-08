@@ -1,5 +1,10 @@
+const crypto = require("crypto");
+
 const BASE =
   "https://api3.devcorp.me";
+
+const ONETOUCH_ORIGIN =
+  "https://onetouchtv.xyz";
 
 const ONETOUCH_HOST =
   "aapanel.devcorp.me";
@@ -7,8 +12,41 @@ const ONETOUCH_HOST =
 const USER_AGENT =
   "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0 Mobile Safari/537.36";
 
+
+/*
+ * OneTouchTV response encryption
+ * AES-256-CBC
+ */
+const KEY_HEX =
+  Buffer.from(
+    "Njk2ZDM3MzI2MzY4NjE3MjUwNjE3MzczNzc2ZjcyNjQ2ZjY2NjQ0OTZlNjk3NDU2NjU2Mzc0NmY3MjUzNzQ2ZA==",
+    "base64"
+  ).toString();
+
+const IV_HEX =
+  Buffer.from(
+    "Njk2ZDM3MzI2MzY4NjE3MjUwNjE3MzczNzc2ZjcyNjQ=",
+    "base64"
+  ).toString();
+
+const KEY =
+  Buffer.from(
+    KEY_HEX,
+    "hex"
+  );
+
+const IV =
+  Buffer.from(
+    IV_HEX,
+    "hex"
+  );
+
+
 const LOOKUP_TTL =
   4 * 60 * 60 * 1000;
+
+const EPISODE_TTL =
+  30 * 60 * 1000;
 
 const STREAM_TTL =
   60 * 60 * 1000;
@@ -16,7 +54,11 @@ const STREAM_TTL =
 const SUBTITLE_TTL =
   60 * 60 * 1000;
 
+
 const lookupCache =
+  new Map();
+
+const episodeCache =
   new Map();
 
 const streamCache =
@@ -77,6 +119,19 @@ async function memo(
 }
 
 
+function isOneTouchApi(url) {
+  try {
+    return (
+      new URL(url).host ===
+      new URL(BASE).host
+    );
+
+  } catch {
+    return false;
+  }
+}
+
+
 async function request(
   url,
   options = {},
@@ -93,6 +148,23 @@ async function request(
       timeoutMs
     );
 
+  const apiHeaders =
+    isOneTouchApi(url)
+      ? {
+          Accept:
+            "*/*",
+
+          Origin:
+            ONETOUCH_ORIGIN,
+
+          Referer:
+            ONETOUCH_ORIGIN
+        }
+      : {
+          Accept:
+            "*/*"
+        };
+
   try {
     const response =
       await fetch(
@@ -107,11 +179,10 @@ async function request(
             "follow",
 
           headers: {
-            Accept:
-              "application/json, text/plain, */*",
-
             "User-Agent":
               USER_AGENT,
+
+            ...apiHeaders,
 
             ...(options.headers || {})
           }
@@ -132,6 +203,111 @@ async function request(
 }
 
 
+/*
+ * OneTouchTV uses a modified
+ * Base64 alphabet.
+ */
+function normaliseCipher(value) {
+  return String(
+    value || ""
+  )
+    .replace(
+      /-_\./g,
+      "/"
+    )
+
+    .replace(
+      /@/g,
+      "+"
+    )
+
+    .replace(
+      /\s+/g,
+      ""
+    );
+}
+
+
+function parseDecrypted(text) {
+  try {
+    const parsed =
+      JSON.parse(text);
+
+    if (
+      typeof parsed ===
+      "string"
+    ) {
+      return JSON.parse(
+        parsed
+      );
+    }
+
+    return parsed;
+
+  } catch {
+    return text;
+  }
+}
+
+
+function decryptResponse(input) {
+  const normalised =
+    normaliseCipher(
+      input
+    );
+
+  let base64 =
+    normalised;
+
+  const remainder =
+    base64.length % 4;
+
+  if (remainder) {
+    base64 +=
+      "=".repeat(
+        4 - remainder
+      );
+  }
+
+  const cipherBytes =
+    Buffer.from(
+      base64,
+      "base64"
+    );
+
+  if (
+    !cipherBytes.length ||
+    cipherBytes.length % 16 !== 0
+  ) {
+    throw new Error(
+      `Ciphertext length (${cipherBytes.length}) not multiple of 16`
+    );
+  }
+
+  const decipher =
+    crypto.createDecipheriv(
+      "aes-256-cbc",
+      KEY,
+      IV
+    );
+
+  const decrypted =
+    Buffer.concat([
+      decipher.update(
+        cipherBytes
+      ),
+
+      decipher.final()
+    ]);
+
+  return parseDecrypted(
+    decrypted.toString(
+      "utf8"
+    )
+  );
+}
+
+
 async function requestJson(
   url,
   options = {},
@@ -144,17 +320,70 @@ async function requestJson(
       timeoutMs
     );
 
-  const text =
+  let text =
     await response.text();
 
+  /*
+   * Kalau endpoint tiba-tiba
+   * pulangkan JSON biasa.
+   */
   try {
-    return JSON.parse(
-      text
-    );
+    const parsed =
+      JSON.parse(text);
 
-  } catch {
+    if (
+      parsed &&
+      typeof parsed ===
+      "object"
+    ) {
+      return parsed;
+    }
+
+    if (
+      typeof parsed ===
+      "string"
+    ) {
+      text =
+        parsed;
+    }
+
+  } catch {}
+
+
+  if (
+    !isOneTouchApi(url)
+  ) {
     throw new Error(
       `Invalid JSON: ${url}`
+    );
+  }
+
+
+  try {
+    const decrypted =
+      decryptResponse(
+        text
+      );
+
+    if (
+      !decrypted ||
+      typeof decrypted !==
+        "object"
+    ) {
+      throw new Error(
+        "Decrypted response is not JSON"
+      );
+    }
+
+    console.log(
+      `[onetouchtv decrypt] ${url} OK`
+    );
+
+    return decrypted;
+
+  } catch (error) {
+    throw new Error(
+      `OneTouchTV decrypt failed: ${error.message}`
     );
   }
 }
@@ -168,17 +397,7 @@ async function requestText(
   const response =
     await request(
       url,
-      {
-        ...options,
-
-        headers: {
-          Accept:
-            "*/*",
-
-          ...(options.headers || {})
-        }
-      },
-
+      options,
       timeoutMs
     );
 
@@ -294,6 +513,7 @@ function scoreCandidate(
     score += 60;
   }
 
+
   const wantedYear =
     getYear(ctx);
 
@@ -308,10 +528,12 @@ function scoreCandidate(
     foundYear
   ) {
     score +=
-      wantedYear === foundYear
+      wantedYear ===
+        foundYear
         ? 30
         : -15;
   }
+
 
   const otherTitles =
     Array.isArray(
@@ -348,9 +570,11 @@ async function searchTitle(ctx) {
     );
   }
 
+
   const queries = [
     title
   ];
+
 
   if (
     ctx.originalTitle &&
@@ -364,8 +588,10 @@ async function searchTitle(ctx) {
     );
   }
 
+
   if (
-    ctx.type === "series" &&
+    ctx.type ===
+      "series" &&
     Number(
       ctx.season
     ) > 1
@@ -374,6 +600,7 @@ async function searchTitle(ctx) {
       `${title} Season ${ctx.season}`
     );
   }
+
 
   const results =
     await Promise.allSettled(
@@ -397,18 +624,27 @@ async function searchTitle(ctx) {
               url
             );
 
-          return Array.isArray(
-            data?.result
-          )
-            ? data.result
-            : [];
+          const rows =
+            Array.isArray(
+              data?.result
+            )
+              ? data.result
+              : [];
+
+          console.log(
+            `[onetouchtv search result] ${query} | ${rows.length}`
+          );
+
+          return rows;
         }
       )
     );
 
+
   const candidates = [];
   const seen =
     new Set();
+
 
   for (
     const result
@@ -426,6 +662,7 @@ async function searchTitle(ctx) {
 
       continue;
     }
+
 
     for (
       const item
@@ -450,6 +687,7 @@ async function searchTitle(ctx) {
     }
   }
 
+
   candidates.sort(
     (a, b) =>
       scoreCandidate(
@@ -461,6 +699,7 @@ async function searchTitle(ctx) {
         ctx
       )
   );
+
 
   return candidates;
 }
@@ -481,8 +720,10 @@ async function getDetail(id) {
       url
     );
 
-  return data?.result ||
-    null;
+  return (
+    data?.result ||
+    null
+  );
 }
 
 
@@ -497,12 +738,17 @@ function chooseEpisode(
       ? detail.episodes
       : [];
 
-  if (!episodes.length) {
+
+  if (
+    !episodes.length
+  ) {
     return null;
   }
 
+
   if (
-    ctx.type === "movie"
+    ctx.type ===
+    "movie"
   ) {
     return (
       episodes[0] ||
@@ -510,23 +756,27 @@ function chooseEpisode(
     );
   }
 
+
   const wanted =
     Number(
       ctx.episode ||
       1
     );
 
+
   const exact =
     episodes.find(
-      ep =>
+      episode =>
         Number(
-          ep?.episode
+          episode?.episode
         ) === wanted
     );
+
 
   if (exact) {
     return exact;
   }
+
 
   return (
     episodes[
@@ -549,6 +799,7 @@ async function resolveEpisode(ctx) {
           ctx
         );
 
+
       if (
         !candidates.length
       ) {
@@ -557,66 +808,84 @@ async function resolveEpisode(ctx) {
         );
       }
 
-      let best =
-        null;
 
-      for (
-        const candidate
-        of candidates.slice(
-          0,
-          5
-        )
-      ) {
-        try {
-          const detail =
-            await getDetail(
-              candidate.id
-            );
+      /*
+       * Detail candidates dibuat parallel
+       * untuk kurangkan loading time.
+       */
+      const detailResults =
+        await Promise.allSettled(
+          candidates
+            .slice(
+              0,
+              5
+            )
+            .map(
+              async candidate => {
+                const detail =
+                  await getDetail(
+                    candidate.id
+                  );
 
-          if (!detail) {
-            continue;
-          }
+                if (!detail) {
+                  return null;
+                }
 
-          const score =
-            scoreCandidate(
-              {
-                ...candidate,
+                const score =
+                  scoreCandidate(
+                    {
+                      ...candidate,
 
-                title:
-                  detail.title ||
-                  candidate.title,
+                      title:
+                        detail.title ||
+                        candidate.title,
 
-                year:
-                  detail.year ||
-                  candidate.year,
+                      year:
+                        detail.year ||
+                        candidate.year,
 
-                otherTitles:
-                  detail.otherTitles ||
-                  candidate.otherTitles
-              },
+                      otherTitles:
+                        detail.otherTitles ||
+                        candidate.otherTitles
+                    },
 
-              ctx
-            );
+                    ctx
+                  );
 
-          if (
-            !best ||
-            score >
-              best.score
-          ) {
-            best = {
-              score,
-              detail
-            };
-          }
+                return {
+                  score,
+                  detail
+                };
+              }
+            )
+        );
 
-        } catch (error) {
-          console.warn(
-            `[onetouchtv candidate failed] ` +
-            `${candidate.id} | ` +
-            `${error.message}`
+
+      const valid =
+        detailResults
+
+          .filter(
+            result =>
+              result.status ===
+                "fulfilled" &&
+              result.value
+          )
+
+          .map(
+            result =>
+              result.value
+          )
+
+          .sort(
+            (a, b) =>
+              b.score -
+              a.score
           );
-        }
-      }
+
+
+      const best =
+        valid[0];
+
 
       if (
         !best?.detail
@@ -626,14 +895,17 @@ async function resolveEpisode(ctx) {
         );
       }
 
+
       const detail =
         best.detail;
+
 
       const episode =
         chooseEpisode(
           detail,
           ctx
         );
+
 
       if (!episode) {
         throw new Error(
@@ -643,22 +915,25 @@ async function resolveEpisode(ctx) {
         );
       }
 
-      const firstIdentifier =
+
+      const identifier =
         detail
           .episodes?.[0]
           ?.identifier;
 
+
       const episodeId =
-        firstIdentifier ||
+        identifier ||
         detail.id;
+
 
       const episodeParam =
         episode.playId ||
-        episode.episode ||
         String(
           ctx.episode ||
           1
         );
+
 
       console.log(
         `[onetouchtv match] ` +
@@ -668,6 +943,7 @@ async function resolveEpisode(ctx) {
         `playId=${episodeParam}`
       );
 
+
       return {
         title:
           detail.title ||
@@ -676,7 +952,10 @@ async function resolveEpisode(ctx) {
         providerId:
           detail.id,
 
-        episodeId,
+        episodeId:
+          String(
+            episodeId
+          ),
 
         episodeParam:
           String(
@@ -692,26 +971,43 @@ async function getEpisode(
   episodeId,
   episodeParam
 ) {
-  const url =
-    `${BASE}/vod/` +
-    `${encodeURIComponent(episodeId)}` +
-    `/episode/` +
-    `${encodeURIComponent(episodeParam)}`;
+  const key =
+    `${episodeId}:${episodeParam}`;
 
-  console.log(
-    `[onetouchtv episode] ` +
-    `${episodeId}/${episodeParam}`
+
+  return memo(
+    episodeCache,
+    key,
+    EPISODE_TTL,
+
+    async () => {
+      const url =
+        `${BASE}/vod/` +
+        `${encodeURIComponent(episodeId)}` +
+        `/episode/` +
+        `${encodeURIComponent(episodeParam)}`;
+
+
+      console.log(
+        `[onetouchtv episode] ` +
+        `${episodeId}/${episodeParam}`
+      );
+
+
+      const data =
+        await requestJson(
+          url,
+          {},
+          15000
+        );
+
+
+      return (
+        data?.result ||
+        null
+      );
+    }
   );
-
-  const data =
-    await requestJson(
-      url,
-      {},
-      15000
-    );
-
-  return data?.result ||
-    null;
 }
 
 
@@ -739,11 +1035,14 @@ async function getFinalPlaylist(url) {
     return url;
   }
 
+
   let playlistUrl =
     url;
 
+
   const maxAttempts =
     2;
+
 
   for (
     let attempt = 0;
@@ -752,6 +1051,7 @@ async function getFinalPlaylist(url) {
     attempt++
   ) {
     let playlist;
+
 
     try {
       playlist =
@@ -770,6 +1070,7 @@ async function getFinalPlaylist(url) {
       break;
     }
 
+
     if (
       !playlist ||
       !playlist.includes(
@@ -779,16 +1080,21 @@ async function getFinalPlaylist(url) {
       break;
     }
 
+
     const lines =
       playlist
-        .split(/\r?\n/)
+        .split(
+          /\r?\n/
+        )
         .map(
           line =>
             line.trim()
         );
 
+
     let lastStreamUrl =
       null;
+
 
     for (
       let i =
@@ -812,9 +1118,13 @@ async function getFinalPlaylist(url) {
       }
     }
 
-    if (!lastStreamUrl) {
+
+    if (
+      !lastStreamUrl
+    ) {
       break;
     }
+
 
     const resolved =
       absoluteUrl(
@@ -822,9 +1132,11 @@ async function getFinalPlaylist(url) {
         playlistUrl
       );
 
+
     if (!resolved) {
       break;
     }
+
 
     console.log(
       "[onetouchtv playlist redirect]",
@@ -834,9 +1146,11 @@ async function getFinalPlaylist(url) {
       )
     );
 
+
     playlistUrl =
       resolved;
   }
+
 
   return playlistUrl;
 }
@@ -853,10 +1167,12 @@ function streamObject(
       ""
     ).trim();
 
+
   const name =
     quality
       ? `OneTouchTV • ${quality}`
       : `OneTouchTV • Server ${index + 1}`;
+
 
   return {
     name,
@@ -875,16 +1191,18 @@ function streamObject(
       bingeGroup:
         `OneTouchTV-${index}`,
 
-      ...(source?.headers &&
-      typeof source.headers ===
-        "object"
-        ? {
-            proxyHeaders: {
-              request:
-                source.headers
+      ...(
+        source?.headers &&
+        typeof source.headers ===
+          "object"
+          ? {
+              proxyHeaders: {
+                request:
+                  source.headers
+              }
             }
-          }
-        : {})
+          : {}
+      )
     }
   };
 }
@@ -896,11 +1214,13 @@ async function resolveStreams(ctx) {
       ctx
     );
 
+
   const episode =
     await getEpisode(
       resolved.episodeId,
       resolved.episodeParam
     );
+
 
   const sources =
     Array.isArray(
@@ -909,10 +1229,11 @@ async function resolveStreams(ctx) {
       ? episode.sources
       : [];
 
+
   console.log(
-    `[onetouchtv sources] ` +
-    `${sources.length}`
+    `[onetouchtv sources] ${sources.length}`
   );
+
 
   const results =
     await Promise.allSettled(
@@ -927,14 +1248,17 @@ async function resolveStreams(ctx) {
             return null;
           }
 
+
           const url =
             await getFinalPlaylist(
               source.url
             );
 
+
           if (!url) {
             return null;
           }
+
 
           return streamObject(
             source,
@@ -945,25 +1269,31 @@ async function resolveStreams(ctx) {
       )
     );
 
+
   const streams =
     results
+
       .filter(
         result =>
           result.status ===
             "fulfilled" &&
           result.value
       )
+
       .map(
         result =>
           result.value
       );
 
+
   const seen =
     new Set();
+
 
   return streams.filter(
     stream => {
       if (
+        !stream?.url ||
         seen.has(
           stream.url
         )
@@ -971,9 +1301,11 @@ async function resolveStreams(ctx) {
         return false;
       }
 
+
       seen.add(
         stream.url
       );
+
 
       return true;
     }
@@ -981,9 +1313,7 @@ async function resolveStreams(ctx) {
 }
 
 
-function subtitleLanguage(
-  item
-) {
+function subtitleLanguage(item) {
   return String(
     item?.name ||
     item?.label ||
@@ -998,11 +1328,17 @@ async function resolveSubtitles(ctx) {
       ctx
     );
 
+
+  /*
+   * getEpisode share cache yang sama
+   * dengan resolveStreams().
+   */
   const episode =
     await getEpisode(
       resolved.episodeId,
       resolved.episodeParam
     );
+
 
   const tracks =
     Array.isArray(
@@ -1011,10 +1347,11 @@ async function resolveSubtitles(ctx) {
       ? episode.track
       : [];
 
+
   console.log(
-    `[onetouchtv subtitles] ` +
-    `${tracks.length}`
+    `[onetouchtv subtitles] ${tracks.length}`
   );
+
 
   return tracks
 
