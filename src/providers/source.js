@@ -2,8 +2,12 @@ const providers = [
   require("./kisskh")
 ];
 
-const PROVIDER_TIMEOUT_MS =
-  7000;
+/*
+ * 15s untuk first uncached resolve.
+ * Selepas provider ID dan stream cache hit,
+ * response akan jauh lebih cepat.
+ */
+const PROVIDER_TIMEOUT_MS = 15000;
 
 
 function withTimeout(
@@ -12,68 +16,56 @@ function withTimeout(
 ) {
   let timer;
 
-  const timeout =
-    new Promise(
-      resolve => {
-        timer =
-          setTimeout(
-            () => {
-              console.warn(
-                `[provider timeout] ${providerName}`
-              );
-
-              resolve([]);
-            },
-
-            PROVIDER_TIMEOUT_MS
+  const timeout = new Promise(
+    resolve => {
+      timer = setTimeout(
+        () => {
+          console.warn(
+            `[provider timeout] ${providerName} after ${PROVIDER_TIMEOUT_MS}ms`
           );
-      }
-    );
+
+          resolve([]);
+        },
+        PROVIDER_TIMEOUT_MS
+      );
+    }
+  );
 
   return Promise.race([
     Promise
       .resolve(promise)
-      .catch(
-        error => {
-          console.error(
-            `[provider error] ${providerName}`,
-            error.message
-          );
+      .catch(error => {
+        console.error(
+          `[provider error] ${providerName}`,
+          error?.message || error
+        );
 
-          return [];
-        }
-      ),
+        return [];
+      }),
 
     timeout
-  ]).finally(
-    () =>
-      clearTimeout(
-        timer
-      )
-  );
+  ]).finally(() => {
+    clearTimeout(timer);
+  });
 }
 
 
 function dedupeByUrl(items) {
-  const seen =
-    new Set();
+  const seen = new Set();
 
-  return items.filter(
-    item => {
-      const url =
-        item?.url;
+  return items.filter(item => {
+    const url = item?.url;
 
-      if (
-        !url ||
-        seen.has(url)
-      ) {
-        return false;
-      }
-
-      seen.add(url);
-      return true;
+    if (
+      !url ||
+      seen.has(url)
+    ) {
+      return false;
     }
-  );
+
+    seen.add(url);
+    return true;
+  });
 }
 
 
@@ -81,19 +73,34 @@ async function run(
   method,
   ctx
 ) {
+  const started =
+    Date.now();
+
   const results =
     await Promise.all(
-      providers.map(
-        provider =>
-          withTimeout(
-            provider[
-              method
-            ]?.(ctx) || [],
+      providers.map(provider => {
+        const name =
+          provider.name ||
+          "unknown";
 
-            provider.name ||
-              "unknown"
-          )
-      )
+        return withTimeout(
+          Promise
+            .resolve(
+              provider[method]?.(ctx) || []
+            )
+            .then(result => {
+              console.log(
+                `[provider done] ${name} ${method} ` +
+                `${Date.now() - started}ms ` +
+                `${Array.isArray(result) ? result.length : 0} results`
+              );
+
+              return result;
+            }),
+
+          name
+        );
+      })
     );
 
   return dedupeByUrl(
@@ -109,22 +116,20 @@ async function getStreams(ctx) {
       ctx
     );
 
+  /*
+   * Kekal strict:
+   * hanya stream yang kita boleh sahkan >=720p.
+   */
   return streams
-
-    .filter(
-      stream =>
-        Number(
-          stream.quality ||
-          0
-        ) >= 720
+    .filter(stream =>
+      Number(
+        stream?.quality || 0
+      ) >= 720
     )
-
-    .map(
-      ({
-        quality,
-        ...stream
-      }) => stream
-    );
+    .map(({
+      quality,
+      ...stream
+    }) => stream);
 }
 
 
