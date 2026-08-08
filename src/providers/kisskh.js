@@ -1,4 +1,7 @@
-const BASE = "https://kisskh.id";
+const BASES = [
+  "https://kisskh.co",
+  "https://kisskh.id"
+];
 
 const VIDEO_KEY_API =
   "https://script.google.com/macros/s/AKfycbzn8B31PuDxzaMa9_CQ0VGEDasFqfzI5bXvjaIZH4DM8DNq9q6xj1ALvZNz_JT3jF0suA/exec?id=";
@@ -7,25 +10,15 @@ const SUB_KEY_API =
   "https://script.google.com/macros/s/AKfycbyq6hTj0ZhlinYC6xbggtgo166tp6XaDKBCGtnYk8uOfYBUFwwxBui0sGXiu_zIFmA/exec?id=";
 
 const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/127 Safari/537.36";
+  "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0 Mobile Safari/537.36";
 
-const LOOKUP_TTL =
-  6 * 60 * 60 * 1000;
+const LOOKUP_TTL = 6 * 60 * 60 * 1000;
+const STREAM_TTL = 2 * 60 * 1000;
+const SUBTITLE_TTL = 10 * 60 * 1000;
 
-const STREAM_TTL =
-  2 * 60 * 1000;
-
-const SUBTITLE_TTL =
-  10 * 60 * 1000;
-
-const lookupCache =
-  new Map();
-
-const streamCache =
-  new Map();
-
-const subtitleCache =
-  new Map();
+const lookupCache = new Map();
+const streamCache = new Map();
+const subtitleCache = new Map();
 
 
 function cacheKey(ctx) {
@@ -44,8 +37,7 @@ async function memo(
   ttl,
   loader
 ) {
-  const now =
-    Date.now();
+  const now = Date.now();
 
   const hit =
     cache.get(key);
@@ -85,7 +77,7 @@ async function memo(
 async function requestText(
   url,
   options = {},
-  timeoutMs = 5500
+  timeoutMs = 7000
 ) {
   const controller =
     new AbortController();
@@ -94,6 +86,7 @@ async function requestText(
     setTimeout(
       () =>
         controller.abort(),
+
       timeoutMs
     );
 
@@ -139,7 +132,7 @@ async function requestText(
 async function requestJson(
   url,
   options = {},
-  timeoutMs = 5500
+  timeoutMs = 7000
 ) {
   const text =
     await requestText(
@@ -187,15 +180,26 @@ function normalise(value) {
 function slug(value) {
   return String(
     value || ""
-  ).replace(
-    /[^a-zA-Z0-9]/g,
-    "-"
-  );
+  )
+    .replace(
+      /[^a-zA-Z0-9]/g,
+      "-"
+    )
+
+    .replace(
+      /-+/g,
+      "-"
+    )
+
+    .replace(
+      /^-|-$/g,
+      ""
+    );
 }
 
 
 function getTitle(ctx) {
-  return (
+  return String(
     ctx.meta?.name ||
     ctx.meta?.title ||
     ctx.meta?.originalTitle ||
@@ -243,28 +247,33 @@ function searchQueries(ctx) {
     return [];
   }
 
-  const queries = [];
+  const queries = [
+    title
+  ];
 
   if (
     ctx.type === "series" &&
     Number(ctx.season) > 1
   ) {
-    queries.push(
+    queries.unshift(
       `${title} Season ${ctx.season}`
     );
   }
 
-  queries.push(title);
-
   return [
-    ...new Set(queries)
+    ...new Set(
+      queries
+    )
   ];
 }
 
 
-async function search(query) {
+async function searchBase(
+  base,
+  query
+) {
   const url =
-    `${BASE}/api/DramaList/Search` +
+    `${base}/api/DramaList/Search` +
     `?q=${encodeURIComponent(query)}` +
     `&type=0`;
 
@@ -274,14 +283,66 @@ async function search(query) {
       {
         headers: {
           Referer:
-            `${BASE}/`
+            `${base}/`
         }
       }
     );
 
-  return Array.isArray(json)
-    ? json
-    : [];
+  const items =
+    Array.isArray(json)
+      ? json
+      : [];
+
+  console.log(
+    `[kisskh search] ${base} | ${query} | ${items.length}`
+  );
+
+  return items.map(
+    item => ({
+      ...item,
+      _base:
+        base
+    })
+  );
+}
+
+
+async function searchAll(query) {
+  const results =
+    await Promise.allSettled(
+      BASES.map(
+        base =>
+          searchBase(
+            base,
+            query
+          )
+      )
+    );
+
+  const output = [];
+
+  for (
+    const result
+    of results
+  ) {
+    if (
+      result.status ===
+      "fulfilled"
+    ) {
+      output.push(
+        ...result.value
+      );
+
+    } else {
+      console.warn(
+        "[kisskh search base failed]",
+        result.reason?.message ||
+        result.reason
+      );
+    }
+  }
+
+  return output;
 }
 
 
@@ -299,14 +360,14 @@ function searchScore(
       item?.title
     );
 
-  let score = 0;
-
   if (
     !wanted ||
     !found
   ) {
-    return score;
+    return 0;
   }
+
+  let score = 0;
 
   if (
     found === wanted
@@ -349,7 +410,13 @@ function searchScore(
 
 
 async function loadDetail(item) {
-  if (!item?.id) {
+  const base =
+    item?._base;
+
+  if (
+    !base ||
+    !item?.id
+  ) {
     return null;
   }
 
@@ -358,20 +425,27 @@ async function loadDetail(item) {
     "Drama";
 
   const url =
-    `${BASE}/api/DramaList/Drama/` +
+    `${base}/api/DramaList/Drama/` +
     `${item.id}?isq=false`;
 
-  return requestJson(
-    url,
-    {
-      headers: {
-        Referer:
-          `${BASE}/Drama/` +
-          `${slug(title)}` +
-          `?id=${item.id}`
+  const detail =
+    await requestJson(
+      url,
+      {
+        headers: {
+          Referer:
+            `${base}/Drama/` +
+            `${slug(title)}` +
+            `?id=${item.id}`
+        }
       }
-    }
-  );
+    );
+
+  return {
+    ...detail,
+    _base:
+      base
+  };
 }
 
 
@@ -400,7 +474,10 @@ function detailScore(
     Number(
       String(
         detail.releaseDate || ""
-      ).slice(0, 4)
+      ).slice(
+        0,
+        4
+      )
     ) || null;
 
   let score = 0;
@@ -427,39 +504,26 @@ function detailScore(
     foundYear
   ) {
     score +=
-      wantedYear === foundYear
+      wantedYear ===
+        foundYear
         ? 30
         : -15;
   }
 
   if (
-    ctx.type === "series" &&
-    Number(ctx.season) > 1
-  ) {
-    const raw =
-      String(
-        detail.title || ""
-      ).toLowerCase();
-
-    if (
-      raw.includes(
-        `season ${ctx.season}`
-      )
-    ) {
-      score += 35;
-    }
-  }
-
-  if (
-    ctx.type === "movie" &&
-    detail.type === "Movie"
+    ctx.type ===
+      "series" &&
+    detail.type !==
+      "Movie"
   ) {
     score += 20;
   }
 
   if (
-    ctx.type === "series" &&
-    detail.type !== "Movie"
+    ctx.type ===
+      "movie" &&
+    detail.type ===
+      "Movie"
   ) {
     score += 20;
   }
@@ -484,7 +548,8 @@ function chooseEpisode(
   }
 
   if (
-    ctx.type === "movie"
+    ctx.type ===
+    "movie"
   ) {
     return episodes[0];
   }
@@ -546,7 +611,9 @@ async function resolveEpisode(ctx) {
 
       const searches =
         await Promise.allSettled(
-          queries.map(search)
+          queries.map(
+            searchAll
+          )
         );
 
       const candidates = [];
@@ -568,14 +635,18 @@ async function resolveEpisode(ctx) {
           const item
           of result.value
         ) {
+          const idKey =
+            `${item._base}:` +
+            `${item.id}`;
+
           if (
             !item?.id ||
-            seen.has(item.id)
+            seen.has(idKey)
           ) {
             continue;
           }
 
-          seen.add(item.id);
+          seen.add(idKey);
           candidates.push(item);
         }
       }
@@ -603,8 +674,10 @@ async function resolveEpisode(ctx) {
       const detailResults =
         await Promise.allSettled(
           candidates
-            .slice(0, 4)
-            .map(loadDetail)
+            .slice(0, 6)
+            .map(
+              loadDetail
+            )
         );
 
       const details =
@@ -652,11 +725,23 @@ async function resolveEpisode(ctx) {
       if (!episode?.id) {
         throw new Error(
           `KissKH episode not found: ` +
-          `${ctx.season || 0}x${ctx.episode || 0}`
+          `${ctx.season || 0}x` +
+          `${ctx.episode || 0}`
         );
       }
 
+      console.log(
+        `[kisskh match] ` +
+        `base=${detail._base} ` +
+        `id=${detail.id} ` +
+        `ep=${episode.number} ` +
+        `epId=${episode.id}`
+      );
+
       return {
+        base:
+          detail._base,
+
         title:
           detail.title ||
           getTitle(ctx),
@@ -691,7 +776,7 @@ async function fetchKey(
       `${encodeURIComponent(epsId)}` +
       `&version=2.8.10`,
       {},
-      6500
+      9000
     );
 
   if (!json?.key) {
@@ -736,39 +821,24 @@ function absoluteUrl(
 }
 
 
-async function expandHls(url) {
-  let text;
+async function expandHls(
+  url,
+  base
+) {
+  const text =
+    await requestText(
+      url,
+      {
+        headers: {
+          Referer:
+            `${base}/`,
 
-  try {
-    text =
-      await requestText(
-        url,
-        {
-          headers: {
-            Referer:
-              `${BASE}/`,
-
-            Origin:
-              BASE
-          }
-        },
-        4500
-      );
-
-  } catch {
-    const quality =
-      detectQuality(url);
-
-    return (
-      quality &&
-      quality >= 720
-    )
-      ? [{
-          url,
-          quality
-        }]
-      : [];
-  }
+          Origin:
+            base
+        }
+      },
+      6000
+    );
 
   const lines =
     text.split(
@@ -783,9 +853,7 @@ async function expandHls(url) {
     i++
   ) {
     const line =
-      lines[
-        i
-      ].trim();
+      lines[i].trim();
 
     if (
       !line.startsWith(
@@ -817,14 +885,17 @@ async function expandHls(url) {
         !lines[next].trim() ||
         lines[
           next
-        ].trim().startsWith("#")
+        ]
+          .trim()
+          .startsWith("#")
       )
     ) {
       next++;
     }
 
     const variantUrl =
-      next < lines.length
+      next <
+        lines.length
         ? absoluteUrl(
             lines[next].trim(),
             url
@@ -854,19 +925,30 @@ async function expandHls(url) {
   const quality =
     detectQuality(url);
 
-  return (
+  if (
     quality &&
     quality >= 720
-  )
-    ? [{
-        url,
-        quality
-      }]
-    : [];
+  ) {
+    return [{
+      url,
+      quality
+    }];
+  }
+
+  console.log(
+    "[kisskh hls] quality unknown or below 720",
+    url.slice(
+      0,
+      120
+    )
+  );
+
+  return [];
 }
 
 
 function streamObject(
+  base,
   url,
   quality
 ) {
@@ -888,10 +970,10 @@ function streamObject(
       proxyHeaders: {
         request: {
           Referer:
-            `${BASE}/`,
+            `${base}/`,
 
           Origin:
-            BASE,
+            base,
 
           "User-Agent":
             USER_AGENT
@@ -902,13 +984,14 @@ function streamObject(
 }
 
 
-async function resolveStreams(
-  ctx
-) {
+async function resolveStreams(ctx) {
   const episode =
     await resolveEpisode(
       ctx
     );
+
+  const base =
+    episode.base;
 
   const kkey =
     await fetchKey(
@@ -917,13 +1000,13 @@ async function resolveStreams(
     );
 
   const videoApi =
-    `${BASE}/api/DramaList/Episode/` +
+    `${base}/api/DramaList/Episode/` +
     `${episode.epsId}.png` +
     `?err=false&ts=&time=` +
     `&kkey=${encodeURIComponent(kkey)}`;
 
   const referer =
-    `${BASE}/Drama/` +
+    `${base}/Drama/` +
     `${slug(episode.title)}/` +
     `Episode-${episode.eps}` +
     `?id=${episode.id}` +
@@ -939,8 +1022,28 @@ async function resolveStreams(
             referer
         }
       },
-      6000
+      10000
     );
+
+  console.log(
+    "[kisskh source] Video=",
+    String(
+      source?.Video || ""
+    ).slice(
+      0,
+      180
+    )
+  );
+
+  console.log(
+    "[kisskh source] ThirdParty=",
+    String(
+      source?.ThirdParty || ""
+    ).slice(
+      0,
+      180
+    )
+  );
 
   const links = [
     source?.Video,
@@ -969,20 +1072,30 @@ async function resolveStreams(
         link
       )
     ) {
-      const variants =
-        await expandHls(
-          link
+      try {
+        const variants =
+          await expandHls(
+            link,
+            base
+          );
+
+        output.push(
+          ...variants.map(
+            item =>
+              streamObject(
+                base,
+                item.url,
+                item.quality
+              )
+          )
         );
 
-      output.push(
-        ...variants.map(
-          item =>
-            streamObject(
-              item.url,
-              item.quality
-            )
-        )
-      );
+      } catch (error) {
+        console.warn(
+          "[kisskh hls failed]",
+          error.message
+        );
+      }
 
       continue;
     }
@@ -995,16 +1108,26 @@ async function resolveStreams(
       const quality =
         detectQuality(
           link
-        ) ||
-        720;
+        );
 
       if (
+        quality &&
         quality >= 720
       ) {
         output.push(
           streamObject(
+            base,
             link,
             quality
+          )
+        );
+
+      } else {
+        console.log(
+          "[kisskh mp4] quality unknown or below 720",
+          link.slice(
+            0,
+            120
           )
         );
       }
@@ -1012,13 +1135,19 @@ async function resolveStreams(
       continue;
     }
 
-    console.log(
-      "[kisskh] skipped non-direct source",
-      link.slice(
-        0,
-        120
+    if (
+      /^https?:\/\//i.test(
+        link
       )
-    );
+    ) {
+      console.log(
+        "[kisskh third-party pending extractor]",
+        link.slice(
+          0,
+          180
+        )
+      );
+    }
   }
 
   const seen =
@@ -1027,6 +1156,7 @@ async function resolveStreams(
   return output.filter(
     stream => {
       if (
+        !stream?.url ||
         seen.has(
           stream.url
         )
@@ -1068,6 +1198,9 @@ async function resolveSubtitles(
       ctx
     );
 
+  const base =
+    episode.base;
+
   const kkey =
     await fetchKey(
       SUB_KEY_API,
@@ -1076,18 +1209,16 @@ async function resolveSubtitles(
 
   const subtitles =
     await requestJson(
-      `${BASE}/api/Sub/` +
+      `${base}/api/Sub/` +
       `${episode.epsId}` +
       `?kkey=${encodeURIComponent(kkey)}`,
-
       {
         headers: {
           Referer:
-            `${BASE}/`
+            `${base}/`
         }
       },
-
-      6000
+      10000
     );
 
   if (
@@ -1150,7 +1281,8 @@ async function getStreams(ctx) {
   } catch (error) {
     console.error(
       "[kisskh streams]",
-      error.message
+      error?.message ||
+      error
     );
 
     return [];
@@ -1176,7 +1308,8 @@ async function getSubtitles(ctx) {
   } catch (error) {
     console.error(
       "[kisskh subtitles]",
-      error.message
+      error?.message ||
+      error
     );
 
     return [];
