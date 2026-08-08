@@ -198,14 +198,13 @@ function slug(value) {
 }
 
 
-function getTitle(ctx) {
-  return String(
-    ctx.meta?.name ||
-    ctx.meta?.title ||
-    ctx.meta?.originalTitle ||
-    ctx.meta?.original_name ||
-    ""
-  ).trim();
+function getYear(ctx) {
+  const year =
+    Number(ctx.year);
+
+  return Number.isInteger(year)
+    ? year
+    : null;
 }
 
 
