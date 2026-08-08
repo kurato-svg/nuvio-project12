@@ -1,12 +1,9 @@
 function extractFunction(source, name) {
   const match =
-    new RegExp(
-      `fun\\s+${name}\\s*\\(`
-    ).exec(source);
+    new RegExp(`fun\\s+${name}\\s*\\(`)
+      .exec(source);
 
-  if (!match) {
-    return "";
-  }
+  if (!match) return "";
 
   const start = match.index;
   const braceStart =
@@ -132,11 +129,24 @@ function classifyProvider(source) {
       source
     );
 
-  /*
-   * Look beyond loadLinks only.
-   * Helpers called by loadLinks may contain
-   * extractor/decryption logic.
-   */
+  const helperCalls =
+    [
+      ...linksBody.matchAll(
+        /\b(invoke[A-Z][A-Za-z0-9_]*)\s*\(/g
+      )
+    ].map(
+      match => match[1]
+    );
+
+  const uniqueHelpers =
+    [...new Set(helperCalls)];
+
+  const aggregator =
+    /runAllAsync\s*\(/.test(
+      linksBody
+    ) &&
+    uniqueHelpers.length >= 2;
+
   const sourceHasExtractor =
     /loadExtractor\s*\(/.test(
       source
@@ -161,16 +171,16 @@ function classifyProvider(source) {
     "inspect";
 
 
-  if (android) {
+  if (aggregator) {
+    engine =
+      "aggregator";
+  }
+
+  else if (android) {
     engine =
       "webview-adapter";
   }
 
-
-  /*
-   * Stateful JSON playback.
-   * Example: play-info -> wait -> claim -> redeem.
-   */
   else if (
     links.exists &&
     links.http &&
@@ -180,10 +190,6 @@ function classifyProvider(source) {
       "json-session";
   }
 
-
-  /*
-   * Extractor or encrypted-source flow.
-   */
   else if (
     links.exists &&
     (
@@ -195,10 +201,6 @@ function classifyProvider(source) {
       "extractor";
   }
 
-
-  /*
-   * Direct JSON playback.
-   */
   else if (
     links.exists &&
     links.http &&
@@ -213,11 +215,6 @@ function classifyProvider(source) {
       "json-direct";
   }
 
-
-  /*
-   * Direct HLS generation without
-   * a CloudStream extractor.
-   */
   else if (
     links.exists &&
     links.http &&
@@ -231,7 +228,6 @@ function classifyProvider(source) {
       "json-direct";
   }
 
-
   else if (
     links.exists &&
     links.http &&
@@ -241,7 +237,6 @@ function classifyProvider(source) {
       "html-direct";
   }
 
-
   else if (
     search.json ||
     load.json
@@ -249,7 +244,6 @@ function classifyProvider(source) {
     engine =
       "metadata-json";
   }
-
 
   else if (
     search.html ||
@@ -265,15 +259,22 @@ function classifyProvider(source) {
     search,
     load,
     links,
+    helpers:
+      uniqueHelpers,
 
     flags: {
       android,
+      aggregator,
+
       extractor:
         sourceHasExtractor,
+
       aes:
         sourceHasAes,
+
       session:
         sourceHasSession,
+
       m3u8:
         sourceHasM3u8
     }
