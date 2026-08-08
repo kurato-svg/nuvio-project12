@@ -53,27 +53,51 @@ function extractFunction(source, name) {
   );
 }
 
+
 function analyse(body) {
+  const requests =
+    (
+      body.match(
+        /app\.(get|post|put|delete)\s*\(/g
+      ) || []
+    ).length;
+
   return {
+    exists:
+      Boolean(body),
+
+    requests,
+
     http:
-      /app\.(get|post|put|delete)\s*\(/.test(body),
+      requests > 0,
 
     json:
-      /(parsedSafe|parseJson|JsonProperty|JSONObject)/.test(body),
+      /(parsedSafe|parseJson|JsonProperty|JSONObject)/.test(
+        body
+      ),
 
     html:
-      /(Jsoup|\.select\(|\.selectFirst\()/.test(body),
+      /(Jsoup|\.select\(|\.selectFirst\()/.test(
+        body
+      ),
 
     direct:
-      /(newExtractorLink|ExtractorLink\()/.test(body),
+      /(newExtractorLink|ExtractorLink\()/.test(
+        body
+      ),
 
     extractor:
-      /loadExtractor\s*\(/.test(body),
+      /loadExtractor\s*\(/.test(
+        body
+      ),
 
     subtitle:
-      /(newSubtitleFile|SubtitleFile\()/.test(body)
+      /(newSubtitleFile|SubtitleFile\()/.test(
+        body
+      )
   };
 }
+
 
 function classifyProvider(source) {
   const search =
@@ -108,53 +132,85 @@ function classifyProvider(source) {
   let engine =
     "inspect";
 
+
+  /*
+   * Android / WebView always needs
+   * its own compatibility layer.
+   */
   if (android) {
     engine =
       "webview-adapter";
+  }
 
-  } else if (
+
+  /*
+   * Explicit CloudStream extractor flow.
+   */
+  else if (
+    links.exists &&
     links.extractor
   ) {
     engine =
       "extractor";
+  }
 
-  } else if (
-    links.direct &&
+
+  /*
+   * JSON direct engine.
+   *
+   * Important:
+   * JSON in search/meta alone is NOT enough.
+   * loadLinks must actually do stream work.
+   */
+  else if (
+    links.exists &&
+    links.http &&
     (
-      search.json ||
-      load.json ||
-      links.json
+      links.json ||
+      links.direct
     )
   ) {
     engine =
       "json-direct";
+  }
 
-  } else if (
-    links.direct &&
-    (
-      search.html ||
-      load.html ||
-      links.html
-    )
-  ) {
-    engine =
-      "html-direct";
 
-  } else if (
-    search.json ||
-    load.json ||
-    links.json
-  ) {
-    engine =
-      "json-direct";
-
-  } else if (
-    search.html ||
-    load.html ||
+  /*
+   * HTML direct engine.
+   */
+  else if (
+    links.exists &&
+    links.http &&
     links.html
   ) {
     engine =
       "html-direct";
+  }
+
+
+  /*
+   * Provider uses JSON only for
+   * metadata/search.
+   */
+  else if (
+    search.json ||
+    load.json
+  ) {
+    engine =
+      "metadata-json";
+  }
+
+
+  /*
+   * HTML search/detail provider,
+   * but stream execution is not yet known.
+   */
+  else if (
+    search.html ||
+    load.html
+  ) {
+    engine =
+      "metadata-html";
   }
 
   return {
@@ -165,6 +221,7 @@ function classifyProvider(source) {
     android
   };
 }
+
 
 module.exports = {
   classifyProvider
