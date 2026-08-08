@@ -620,60 +620,86 @@ async function resolveMovie(ctx) {
     );
   }
 
-  let searchJson =
-  await fetchJson(
-    searchUrl,
-    {
-      method: "POST",
+  const searchHosts = [
+  searchUrl,
+  searchUrl.replace(
+    "https://filmboom.top",
+    "https://h5.aoneroom.com"
+  )
+];
 
-      headers: {
-        "Content-Type": "application/json",
-        "X-Client-Info": JSON.stringify({
-          timezone: "Asia/Kuala_Lumpur"
-        })
-      },
+let searchJson = null;
+let usedSearchUrl = null;
 
-      body:
-        JSON.stringify(body)
-    }
-  );
+for (const candidateUrl of [...new Set(searchHosts)]) {
 
-let firstItems =
-  Array.isArray(searchJson?.data?.items)
-    ? searchJson.data.items
-    : [];
-
-/*
- * Compatibility retry.
- * Some MovieBox API versions return zero items
- * when older providers send perPage = 0.
- */
-if (
-  firstItems.length === 0 &&
-  String(body.perPage) === "0"
-) {
-  const retryBody = {
+  const normalBody = {
     ...body,
-    perPage: "24"
+    perPage:
+      String(body.perPage) === "0"
+        ? "24"
+        : body.perPage
   };
 
-  searchJson =
+  const response =
     await fetchJson(
-      searchUrl,
+      candidateUrl,
       {
         method: "POST",
 
         headers: {
-          "Content-Type": "application/json",
-          "X-Client-Info": JSON.stringify({
-            timezone: "Asia/Kuala_Lumpur"
-          })
+          "Content-Type":
+            "application/json",
+
+          "X-Client-Info":
+            JSON.stringify({
+              timezone:
+                "Asia/Kuala_Lumpur"
+            })
         },
 
         body:
-          JSON.stringify(retryBody)
+          JSON.stringify(
+            normalBody
+          )
       }
     );
+
+  const candidateItems =
+    Array.isArray(
+      response?.data?.items
+    )
+      ? response.data.items
+      : [];
+
+  if (candidateItems.length) {
+    searchJson = response;
+    usedSearchUrl =
+      candidateUrl;
+
+    break;
+  }
+
+  if (!searchJson) {
+    searchJson =
+      response;
+
+    usedSearchUrl =
+      candidateUrl;
+  }
+}
+
+const debugItems =
+  Array.isArray(
+    searchJson?.data?.items
+  )
+    ? searchJson.data.items
+    : [];
+
+if (!debugItems.length) {
+  throw new Error(
+    `Search empty after mirrors • ${usedSearchUrl}`
+  );
 }
 
   const results =
