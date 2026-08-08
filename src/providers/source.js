@@ -2,30 +2,31 @@ const OWNER = "HatsuneMikuUwU";
 const REPO = "cloudstream-extensions-uwu";
 const BRANCH = "master";
 
+const SELECTED_PROVIDER = "MovieboxProvider";
+
 const REPO_JSON =
   `https://raw.githubusercontent.com/${OWNER}/${REPO}/${BRANCH}/repo.json`;
 
 const TREE_API =
   `https://api.github.com/repos/${OWNER}/${REPO}/git/trees/${BRANCH}?recursive=1`;
 
-const TEST_VIDEO =
-  "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4";
+const CACHE_MS = 15 * 60 * 1000;
 
-let cache = null;
-let cacheTime = 0;
+let engineCache = null;
+let engineCacheTime = 0;
 
-const CACHE_MS = 30 * 60 * 1000;
-
-async function fetchJson(url) {
+async function fetchJson(url, options = {}) {
   const res = await fetch(url, {
+    ...options,
     headers: {
       Accept: "application/json",
-      "User-Agent": "nuvio-project12-ir/0.5"
+      "User-Agent": "nuvio-project12/0.6",
+      ...(options.headers || {})
     }
   });
 
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status}`);
+    throw new Error(`HTTP ${res.status}: ${url}`);
   }
 
   return res.json();
@@ -35,12 +36,12 @@ async function fetchText(url) {
   const res = await fetch(url, {
     headers: {
       Accept: "text/plain",
-      "User-Agent": "nuvio-project12-ir/0.5"
+      "User-Agent": "nuvio-project12/0.6"
     }
   });
 
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status}`);
+    throw new Error(`HTTP ${res.status}: ${url}`);
   }
 
   return res.text();
@@ -50,74 +51,21 @@ function rawUrl(path) {
   return `https://raw.githubusercontent.com/${OWNER}/${REPO}/${BRANCH}/${path}`;
 }
 
-function supportsType(plugin, type) {
-  const types = plugin.tvTypes || [];
-
-  if (type === "movie") {
-    return (
-      types.includes("Movie") ||
-      types.includes("AnimeMovie")
-    );
-  }
-
-  if (type === "series") {
-    return (
-      types.includes("TvSeries") ||
-      types.includes("AsianDrama") ||
-      types.includes("Anime") ||
-      types.includes("Cartoon") ||
-      types.includes("OVA")
-    );
-  }
-
-  return false;
-}
-
-function findSourcePath(tree, plugin) {
-  const folder =
-    plugin.internalName ||
-    plugin.name;
-
-  if (!folder) return null;
-
-  const files = tree.filter(item =>
-    item.type === "blob" &&
-    item.path.startsWith(`${folder}/`) &&
-    item.path.endsWith(".kt")
-  );
-
-  if (!files.length) return null;
-
-  return (
-    files.find(item =>
-      /provider\.kt$/i.test(item.path)
-    ) ||
-    files.find(item =>
-      item.path.includes("/src/main/kotlin/")
-    ) ||
-    files[0]
-  ).path;
-}
-
 function extractFunction(source, name) {
-  const regex =
-    new RegExp(`fun\\s+${name}\\s*\\(`);
+  const match =
+    new RegExp(`fun\\s+${name}\\s*\\(`)
+      .exec(source);
 
-  const match = regex.exec(source);
-
-  if (!match) {
-    return "";
-  }
+  if (!match) return "";
 
   const start = match.index;
-
   const braceStart =
     source.indexOf("{", start);
 
-  if (braceStart === -1) {
+  if (braceStart < 0) {
     return source.slice(
       start,
-      Math.min(start + 1200, source.length)
+      start + 3000
     );
   }
 
@@ -146,326 +94,868 @@ function extractFunction(source, name) {
 
   return source.slice(
     start,
-    Math.min(start + 5000, source.length)
+    start + 8000
   );
 }
 
-function countHttp(body, method) {
+function parseStringConstants(source) {
+  const output = {};
+
+  const regex =
+    /(?:private\s+)?(?:override\s+)?(?:var|val)\s+(\w+)\s*=\s*"([^"]*)"/g;
+
+  let match;
+
+  while (
+    (match = regex.exec(source))
+  ) {
+    output[match[1]] =
+      match[2];
+  }
+
+  return output;
+}
+
+function findAppString(
+  body,
+  method,
+  contains
+) {
   const regex =
     new RegExp(
-      `app\\.${method}\\s*\\(`,
+      `app\\.${method}\\s*\\(\\s*"([^"]+)"`,
       "g"
     );
 
-  return (
-    body.match(regex) || []
-  ).length;
+  let match;
+
+  while (
+    (match = regex.exec(body))
+  ) {
+    if (
+      !contains ||
+      match[1].includes(contains)
+    ) {
+      return match[1];
+    }
+  }
+
+  return null;
 }
 
-function analyseFunction(body) {
-  return {
-    get: countHttp(body, "get"),
-    post: countHttp(body, "post"),
-    put: countHttp(body, "put"),
-    direct:
-      body.includes("newExtractorLink") ||
-      body.includes("ExtractorLink("),
-    extractor:
-      body.includes("loadExtractor("),
-    subtitle:
-      body.includes("newSubtitleFile") ||
-      body.includes("SubtitleFile("),
-    html:
-      body.includes(".select(") ||
-      body.includes(".selectFirst(") ||
-      body.includes("Jsoup"),
-    json:
-      body.includes("parsedSafe") ||
-      body.includes("parseJson") ||
-      body.includes("JsonProperty")
-  };
-}
-
-function createIR(source) {
-  const search =
-    analyseFunction(
-      extractFunction(source, "search")
+function findValString(
+  body,
+  name
+) {
+  const regex =
+    new RegExp(
+      `val\\s+${name}\\s*=\\s*"([^"]+)"`
     );
-
-  const load =
-    analyseFunction(
-      extractFunction(source, "load")
-    );
-
-  const links =
-    analyseFunction(
-      extractFunction(source, "loadLinks")
-    );
-
-  const android =
-    source.includes("android.content") ||
-    source.includes("android.webkit") ||
-    source.includes("WebView");
-
-  let engine = "inspect";
-
-  if (android) {
-    engine = "android-adapter";
-  } else if (
-    links.direct &&
-    (
-      links.get > 0 ||
-      links.post > 0
-    )
-  ) {
-    engine = "generic-direct";
-  } else if (links.extractor) {
-    engine = "extractor-engine";
-  } else if (
-    search.html ||
-    load.html
-  ) {
-    engine = "html-engine";
-  } else if (
-    search.json ||
-    load.json
-  ) {
-    engine = "json-engine";
-  }
-
-  return {
-    search,
-    load,
-    links,
-    android,
-    engine
-  };
-}
-
-function compactOps(name, op) {
-  const parts = [];
-
-  if (op.get) {
-    parts.push(`GET${op.get}`);
-  }
-
-  if (op.post) {
-    parts.push(`POST${op.post}`);
-  }
-
-  if (op.put) {
-    parts.push(`PUT${op.put}`);
-  }
-
-  if (op.json) {
-    parts.push("JSON");
-  }
-
-  if (op.html) {
-    parts.push("HTML");
-  }
-
-  if (op.direct) {
-    parts.push("DIRECT");
-  }
-
-  if (op.extractor) {
-    parts.push("EXTRACTOR");
-  }
-
-  if (op.subtitle) {
-    parts.push("SUB");
-  }
 
   return (
-    `${name}:` +
-    (
-      parts.length
-        ? parts.join("+")
-        : "none"
-    )
+    regex.exec(body)?.[1] ||
+    null
   );
 }
 
-async function loadProviders() {
-  if (
-    cache &&
-    Date.now() - cacheTime < CACHE_MS
-  ) {
-    return cache;
+function parseSearchBody(
+  searchBody
+) {
+  const mapMatch =
+    /mapOf\s*\(([\s\S]*?)\)\.toJson\s*\(\)/
+      .exec(searchBody);
+
+  if (!mapMatch) {
+    return [];
   }
 
-  const repoInfo =
-    await fetchJson(REPO_JSON);
+  const pairs = [];
 
-  const pluginLists =
-    repoInfo.pluginLists || [];
+  const regex =
+    /"([^"]+)"\s+to\s+([^,\n\r]+)/g;
 
-  const pluginData =
-    await Promise.all(
-      pluginLists.map(url =>
-        fetchJson(url)
+  let match;
+
+  while (
+    (match = regex.exec(mapMatch[1]))
+  ) {
+    pairs.push({
+      key: match[1],
+      expr: match[2].trim()
+    });
+  }
+
+  return pairs;
+}
+
+function evalSearchExpr(
+  expr,
+  title
+) {
+  if (expr === "query") {
+    return title;
+  }
+
+  const quoted =
+    /^"([^"]*)"$/.exec(expr);
+
+  if (quoted) {
+    return quoted[1];
+  }
+
+  if (/^\d+$/.test(expr)) {
+    return Number(expr);
+  }
+
+  return null;
+}
+
+function evalTemplateExpr(
+  expr,
+  vars,
+  constants
+) {
+  const clean =
+    expr.trim();
+
+  if (
+    Object.prototype
+      .hasOwnProperty.call(
+        constants,
+        clean
       )
+  ) {
+    return constants[clean];
+  }
+
+  const values = {
+    "media.id":
+      vars.subjectId,
+
+    "media.season":
+      vars.season,
+
+    "media.season ?: 0":
+      vars.season ?? 0,
+
+    "media.episode":
+      vars.episode,
+
+    "media.episode ?: 0":
+      vars.episode ?? 0,
+
+    "media.detailPath":
+      vars.detailPath || "",
+
+    "format":
+      vars.format || "",
+
+    "id":
+      vars.streamId || "",
+
+    "query":
+      vars.title || ""
+  };
+
+  return (
+    values[clean] ??
+    ""
+  );
+}
+
+function resolveTemplate(
+  template,
+  vars,
+  constants
+) {
+  if (!template) {
+    return null;
+  }
+
+  let output =
+    template.replace(
+      /\$\{([^}]+)\}/g,
+      (_, expr) =>
+        String(
+          evalTemplateExpr(
+            expr,
+            vars,
+            constants
+          )
+        )
     );
 
-  const plugins =
-    pluginData
-      .flat()
-      .filter(plugin =>
-        plugin &&
-        plugin.status === 1
-      );
+  output =
+    output.replace(
+      /\$(\w+)/g,
+      (_, name) => {
+        if (
+          Object.prototype
+            .hasOwnProperty.call(
+              constants,
+              name
+            )
+        ) {
+          return constants[name];
+        }
 
-  const treeResult =
-    await fetchJson(TREE_API);
-
-  const tree =
-    treeResult.tree || [];
-
-  const providers = [];
-
-  for (const plugin of plugins) {
-    const path =
-      findSourcePath(
-        tree,
-        plugin
-      );
-
-    if (!path) continue;
-
-    try {
-      const source =
-        await fetchText(
-          rawUrl(path)
+        return String(
+          vars[name] ?? ""
         );
+      }
+    );
 
-      providers.push({
-        plugin,
-        path,
-        ir: createIR(source)
-      });
+  return output;
+}
 
-    } catch (error) {
-      console.error(
-        "[IR]",
-        plugin.name,
-        error.message
+function normalise(
+  value = ""
+) {
+  return String(value)
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(
+      /[^\p{L}\p{N}]+/gu,
+      " "
+    )
+    .trim();
+}
+
+function yearFromMeta(meta) {
+  const raw =
+    meta?.releaseInfo ||
+    meta?.year ||
+    meta?.released ||
+    "";
+
+  return (
+    String(raw)
+      .match(
+        /\b(19|20)\d{2}\b/
+      )?.[0] ||
+    ""
+  );
+}
+
+function collectArrays(
+  value,
+  output = []
+) {
+  if (
+    Array.isArray(value)
+  ) {
+    output.push(value);
+
+    for (
+      const item
+      of value
+    ) {
+      collectArrays(
+        item,
+        output
+      );
+    }
+
+  } else if (
+    value &&
+    typeof value === "object"
+  ) {
+    for (
+      const child
+      of Object.values(value)
+    ) {
+      collectArrays(
+        child,
+        output
       );
     }
   }
 
-  cache = {
-    repoInfo,
-    providers
-  };
-
-  cacheTime = Date.now();
-
-  console.log(
-    `[Project12 IR] ${providers.length} providers parsed`
-  );
-
-  return cache;
+  return output;
 }
 
-function enginePriority(engine) {
-  const order = {
-    "generic-direct": 1,
-    "json-engine": 2,
-    "html-engine": 3,
-    "extractor-engine": 4,
-    "android-adapter": 5,
-    "inspect": 6
+function findSearchItems(json) {
+  const arrays =
+    collectArrays(json);
+
+  let best = [];
+  let bestScore = -1;
+
+  for (
+    const array
+    of arrays
+  ) {
+    const first =
+      array.find(
+        item =>
+          item &&
+          typeof item ===
+            "object" &&
+          !Array.isArray(item)
+      );
+
+    if (!first) {
+      continue;
+    }
+
+    let score = 0;
+
+    if (
+      "title" in first ||
+      "name" in first
+    ) {
+      score += 4;
+    }
+
+    if (
+      "subjectId" in first ||
+      "id" in first
+    ) {
+      score += 4;
+    }
+
+    if (
+      "releaseDate" in first ||
+      "year" in first
+    ) {
+      score += 2;
+    }
+
+    if (
+      "detailPath" in first
+    ) {
+      score += 1;
+    }
+
+    if (
+      score > bestScore
+    ) {
+      bestScore = score;
+      best = array;
+    }
+  }
+
+  return best;
+}
+
+function pickMatch(
+  items,
+  title,
+  year
+) {
+  const wanted =
+    normalise(title);
+
+  const exact =
+    items.filter(
+      item =>
+        normalise(
+          item?.title ||
+          item?.name ||
+          ""
+        ) === wanted
+    );
+
+  if (!exact.length) {
+    return null;
+  }
+
+  if (year) {
+    const sameYear =
+      exact.find(
+        item => {
+          const found =
+            String(
+              item?.releaseDate ||
+              item?.year ||
+              ""
+            ).match(
+              /\b(19|20)\d{2}\b/
+            )?.[0];
+
+          return (
+            found === year
+          );
+        }
+      );
+
+    if (sameYear) {
+      return sameYear;
+    }
+  }
+
+  return exact[0];
+}
+
+function findStreams(json) {
+  const arrays =
+    collectArrays(json);
+
+  let best = [];
+  let bestScore = -1;
+
+  for (
+    const array
+    of arrays
+  ) {
+    const first =
+      array.find(
+        item =>
+          item &&
+          typeof item ===
+            "object" &&
+          !Array.isArray(item)
+      );
+
+    if (!first?.url) {
+      continue;
+    }
+
+    let score = 2;
+
+    if (
+      "resolutions" in first ||
+      "quality" in first
+    ) {
+      score += 4;
+    }
+
+    if (
+      "format" in first
+    ) {
+      score += 2;
+    }
+
+    if (
+      "id" in first
+    ) {
+      score += 1;
+    }
+
+    if (
+      "lan" in first ||
+      "lanName" in first ||
+      "language" in first
+    ) {
+      score -= 5;
+    }
+
+    if (
+      score > bestScore
+    ) {
+      bestScore = score;
+      best = array;
+    }
+  }
+
+  return best.filter(
+    item =>
+      item?.url
+  );
+}
+
+async function loadEngine() {
+  if (
+    engineCache &&
+    Date.now() -
+      engineCacheTime <
+      CACHE_MS
+  ) {
+    return engineCache;
+  }
+
+  const repoInfo =
+    await fetchJson(
+      REPO_JSON
+    );
+
+  const lists =
+    await Promise.all(
+      (
+        repoInfo.pluginLists ||
+        []
+      ).map(fetchJson)
+    );
+
+  const plugins =
+    lists
+      .flat()
+      .filter(
+        provider =>
+          provider &&
+          provider.status === 1
+      );
+
+  const selected =
+    plugins.find(
+      provider =>
+        [
+          provider.internalName,
+          provider.name,
+          `${provider.name || ""}Provider`
+        ]
+          .filter(Boolean)
+          .some(
+            value =>
+              String(value)
+                .toLowerCase() ===
+              SELECTED_PROVIDER
+                .toLowerCase()
+          )
+    );
+
+  const tree =
+    (
+      await fetchJson(
+        TREE_API
+      )
+    ).tree || [];
+
+  const folder =
+    selected?.internalName ||
+    SELECTED_PROVIDER;
+
+  const sourcePath =
+    tree
+      .filter(
+        item =>
+          item.type ===
+            "blob" &&
+          item.path.startsWith(
+            `${folder}/`
+          ) &&
+          item.path.endsWith(
+            ".kt"
+          )
+      )
+      .map(
+        item =>
+          item.path
+      )
+      .find(
+        path =>
+          /provider\.kt$/i
+            .test(path)
+      );
+
+  if (!sourcePath) {
+    throw new Error(
+      `Provider source not found: ${SELECTED_PROVIDER}`
+    );
+  }
+
+  const source =
+    await fetchText(
+      rawUrl(sourcePath)
+    );
+
+  const constants =
+    parseStringConstants(
+      source
+    );
+
+  const searchBody =
+    extractFunction(
+      source,
+      "search"
+    );
+
+  const linksBody =
+    extractFunction(
+      source,
+      "loadLinks"
+    );
+
+  const searchTemplate =
+    findAppString(
+      searchBody,
+      "post",
+      "/subject/search"
+    );
+
+  const playTemplate =
+    findAppString(
+      linksBody,
+      "get",
+      "/subject/play"
+    );
+
+  const refererTemplate =
+    findValString(
+      linksBody,
+      "referer"
+    );
+
+  if (
+    !searchTemplate ||
+    !playTemplate
+  ) {
+    throw new Error(
+      "Provider does not match generic-direct JSON engine"
+    );
+  }
+
+  engineCache = {
+    providerName:
+      selected?.name ||
+      SELECTED_PROVIDER
+        .replace(
+          /Provider$/,
+          ""
+        ),
+
+    sourcePath,
+    constants,
+    searchTemplate,
+    playTemplate,
+    refererTemplate,
+
+    searchPairs:
+      parseSearchBody(
+        searchBody
+      )
   };
 
-  return order[engine] || 99;
+  engineCacheTime =
+    Date.now();
+
+  console.log(
+    `[P12 engine] ` +
+    `${engineCache.providerName} <- ` +
+    sourcePath
+  );
+
+  return engineCache;
+}
+
+async function resolveMedia(ctx) {
+  const engine =
+    await loadEngine();
+
+  const title =
+    ctx.meta?.name ||
+    ctx.meta?.title;
+
+  if (!title) {
+    throw new Error(
+      "Cinemeta title missing"
+    );
+  }
+
+  const vars = {
+    title,
+    season:
+      ctx.season ?? 0,
+    episode:
+      ctx.episode ?? 0
+  };
+
+  const searchUrl =
+    resolveTemplate(
+      engine.searchTemplate,
+      vars,
+      engine.constants
+    );
+
+  const body = {};
+
+  for (
+    const pair
+    of engine.searchPairs
+  ) {
+    const value =
+      evalSearchExpr(
+        pair.expr,
+        title
+      );
+
+    if (
+      value !== null
+    ) {
+      body[pair.key] =
+        value;
+    }
+  }
+
+  if (
+    !Object.keys(body)
+      .length
+  ) {
+    throw new Error(
+      "Could not derive search request from Kotlin"
+    );
+  }
+
+  const searchJson =
+    await fetchJson(
+      searchUrl,
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type":
+            "application/json"
+        },
+
+        body:
+          JSON.stringify(body)
+      }
+    );
+
+  const items =
+    findSearchItems(
+      searchJson
+    );
+
+  const match =
+    pickMatch(
+      items,
+      title,
+      yearFromMeta(ctx.meta)
+    );
+
+  if (!match) {
+    throw new Error(
+      `No ${engine.providerName} match for ${title}`
+    );
+  }
+
+  const subjectId =
+    match.subjectId ??
+    match.id;
+
+  if (!subjectId) {
+    throw new Error(
+      "Matched item has no ID"
+    );
+  }
+
+  const resolvedVars = {
+    ...vars,
+    subjectId,
+    detailPath:
+      match.detailPath ||
+      ""
+  };
+
+  const referer =
+    resolveTemplate(
+      engine.refererTemplate,
+      resolvedVars,
+      engine.constants
+    );
+
+  const playUrl =
+    resolveTemplate(
+      engine.playTemplate,
+      resolvedVars,
+      engine.constants
+    );
+
+  const playJson =
+    await fetchJson(
+      playUrl,
+      {
+        headers:
+          referer
+            ? {
+                Referer:
+                  referer
+              }
+            : {}
+      }
+    );
+
+  return {
+    engine,
+    match,
+    referer,
+    streams:
+      findStreams(
+        playJson
+      )
+  };
 }
 
 async function getStreams(ctx) {
   try {
-    const data =
-      await loadProviders();
+    const resolved =
+      await resolveMedia(ctx);
 
-    const matching =
-      data.providers
-        .filter(item =>
-          supportsType(
-            item.plugin,
-            ctx.type
-          )
-        )
-        .sort(
-          (a, b) =>
-            enginePriority(a.ir.engine) -
-            enginePriority(b.ir.engine)
-        );
+    const baseReferer =
+      resolved.engine
+        .constants
+        .secondAPIUrl
+        ? `${resolved.engine.constants.secondAPIUrl}/`
+        : resolved.referer;
 
-    const output = [
-      {
-        name:
-          "Project12 IR Engine",
-        title:
-          `${data.providers.length} Kotlin providers parsed • ` +
-          `${matching.length} compatible with ${ctx.type}`,
-        url: TEST_VIDEO
-      }
-    ];
+    const seen =
+      new Set();
 
-    for (
-      const item
-      of matching.slice(0, 18)
-    ) {
-      const name =
-        (
-          item.plugin.name ||
-          item.plugin.internalName ||
-          "Unknown"
-        ).replace(
-          /Provider$/,
-          ""
-        );
+    return resolved.streams
+      .filter(
+        item => {
+          if (
+            !item?.url ||
+            seen.has(
+              item.url
+            )
+          ) {
+            return false;
+          }
 
-      output.push({
-        name:
-          `P12 • ${name}`,
-        title:
-          `${item.ir.engine} • ` +
-          compactOps(
-            "S",
-            item.ir.search
-          ) +
-          " • " +
-          compactOps(
-            "L",
-            item.ir.load
-          ) +
-          " • " +
-          compactOps(
-            "X",
-            item.ir.links
-          ),
-        url: TEST_VIDEO
-      });
-    }
+          seen.add(
+            item.url
+          );
 
-    return output;
+          return true;
+        }
+      )
+      .map(
+        item => {
+          const quality =
+            item.resolutions ||
+            item.quality ||
+            item.format ||
+            "Direct";
+
+          const stream = {
+            name:
+              `P12 • ${resolved.engine.providerName}`,
+
+            title:
+              `${quality} • RAW GitHub engine`,
+
+            url:
+              item.url
+          };
+
+          if (
+            baseReferer
+          ) {
+            stream.behaviorHints = {
+              notWebReady: true,
+
+              proxyHeaders: {
+                request: {
+                  Referer:
+                    baseReferer
+                }
+              }
+            };
+          }
+
+          return stream;
+        }
+      );
 
   } catch (error) {
     console.error(
-      "[Project12 IR]",
+      "[P12 generic-direct]",
       error
     );
 
-    return [{
-      name:
-        "Project12 IR ERROR",
-      title:
-        String(
-          error.message ||
-          error
-        ),
-      url: TEST_VIDEO
-    }];
+    return [];
   }
 }
 
