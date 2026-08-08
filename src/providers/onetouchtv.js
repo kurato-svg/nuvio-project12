@@ -1,4 +1,11 @@
-const crypto = require("crypto");
+const crypto =
+  require("crypto");
+
+const https =
+  require("https");
+
+const axios =
+  require("axios");
 
 const BASE =
   "https://api3.devcorp.me";
@@ -60,6 +67,57 @@ const streamCache =
 const subtitleCache =
   new Map();
 
+const httpsAgent =
+  new https.Agent({
+    keepAlive: true,
+    maxSockets: 20,
+    maxFreeSockets: 10,
+    timeout: 60000
+  });
+
+
+const PROXY_HOST =
+  process.env.PROXY_WEBSHARE_URL ||
+  "";
+
+const PROXY_PORT =
+  Number(
+    process.env.PROXY_WEBSHARE_PORT ||
+    80
+  );
+
+const PROXY_USERNAME =
+  process.env.PROXY_WEBSHARE_USERNAME ||
+  "";
+
+const PROXY_PASSWORD =
+  process.env.PROXY_WEBSHARE_PASSWORD ||
+  "";
+
+
+function proxyConfig() {
+  if (!PROXY_HOST) {
+    return undefined;
+  }
+
+  return {
+    protocol: "http",
+
+    host:
+      PROXY_HOST,
+
+    port:
+      PROXY_PORT,
+
+    auth: {
+      username:
+        PROXY_USERNAME,
+
+      password:
+        PROXY_PASSWORD
+    }
+  };
+}
 
 function cacheKey(ctx) {
   return (
@@ -69,6 +127,7 @@ function cacheKey(ctx) {
     `${ctx.episode || 0}`
   );
 }
+
 
 
 async function memo(
@@ -292,12 +351,130 @@ function decryptResponse(input) {
   );
 }
 
-
 async function requestJson(
   url,
   options = {},
-  timeoutMs = 8000
+  timeoutMs = 10000
 ) {
+  if (
+    isOneTouchApi(url)
+  ) {
+    try {
+      const response =
+        await axios.get(
+          url,
+          {
+            timeout:
+              timeoutMs,
+
+            httpsAgent,
+
+            proxy:
+              proxyConfig(),
+
+            responseType:
+              "text",
+
+            transformResponse:
+              data => data,
+
+            headers: {
+              "User-Agent":
+                USER_AGENT,
+
+              Accept:
+                "*/*",
+
+              Origin:
+                ONETOUCH_ORIGIN,
+
+              Referer:
+                ONETOUCH_ORIGIN,
+
+              "Accept-Language":
+                "en-US,en;q=0.5",
+
+              "Accept-Encoding":
+                "gzip, deflate",
+
+              Connection:
+                "keep-alive",
+
+              ...(options.headers || {})
+            }
+          }
+        );
+
+      let data =
+        response.data;
+
+      if (
+        typeof data !==
+        "string"
+      ) {
+        return data;
+      }
+
+      try {
+        const plain =
+          JSON.parse(data);
+
+        if (
+          plain &&
+          typeof plain ===
+            "object"
+        ) {
+          return plain;
+        }
+
+        if (
+          typeof plain ===
+          "string"
+        ) {
+          data =
+            plain;
+        }
+
+      } catch {}
+
+
+      const decrypted =
+        decryptResponse(
+          data
+        );
+
+
+      if (
+        !decrypted ||
+        typeof decrypted !==
+          "object"
+      ) {
+        throw new Error(
+          "Decrypted response is not JSON"
+        );
+      }
+
+
+      console.log(
+        `[onetouchtv decrypt] ${url} OK`
+      );
+
+
+      return decrypted;
+
+    } catch (error) {
+      const status =
+        error?.response?.status;
+
+      throw new Error(
+        status
+          ? `HTTP ${status}: ${url}`
+          : `OneTouchTV request failed: ${error?.message || error}`
+      );
+    }
+  }
+
+
   const response =
     await request(
       url,
@@ -305,68 +482,14 @@ async function requestJson(
       timeoutMs
     );
 
-  let text =
+  const text =
     await response.text();
 
-  try {
-    const parsed =
-      JSON.parse(text);
+  return JSON.parse(
+    text
+  );
+}
 
-    if (
-      parsed &&
-      typeof parsed ===
-      "object"
-    ) {
-      return parsed;
-    }
-
-    if (
-      typeof parsed ===
-      "string"
-    ) {
-      text =
-        parsed;
-    }
-
-  } catch {}
-
-
-  if (
-    !isOneTouchApi(url)
-  ) {
-    throw new Error(
-      `Invalid JSON: ${url}`
-    );
-  }
-
-
-  try {
-    const decrypted =
-      decryptResponse(
-        text
-      );
-
-    if (
-      !decrypted ||
-      typeof decrypted !==
-        "object"
-    ) {
-      throw new Error(
-        "Decrypted response is not JSON"
-      );
-    }
-
-    console.log(
-      `[onetouchtv decrypt] ${url} OK`
-    );
-
-    return decrypted;
-
-  } catch (error) {
-    throw new Error(
-      `OneTouchTV decrypt failed: ${error.message}`
-    );
-  }
 }
 
 
