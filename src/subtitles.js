@@ -1,40 +1,75 @@
-const { parseId } = require("./id");
-const { getMeta } = require("./cinemeta");
-const demo = require("./providers/demo");
-const source = require("./providers/source");
+const {
+  parseId
+} = require("./id");
 
-const providers = [demo, source];
+const {
+  getMeta
+} = require("./cinemeta");
 
-async function getSubtitles(type, id) {
-  const parsed = parseId(type, id);
+const {
+  buildContext
+} = require("./context");
+
+const source =
+  require("./providers/source");
+
+
+async function getSubtitles(
+  type,
+  id
+) {
+  const parsed =
+    parseId(
+      type,
+      id
+    );
 
   let meta = null;
+
   try {
-    meta = await getMeta(type, parsed.imdbId);
+    meta =
+      await getMeta(
+        type,
+        parsed.imdbId
+      );
+
   } catch (error) {
-    console.warn("[cinemeta]", error.message);
+    console.warn(
+      "[cinemeta subtitle]",
+      error?.message ||
+      error
+    );
   }
 
-  const ctx = { ...parsed, meta };
+  const ctx =
+    buildContext(
+      parsed,
+      meta
+    );
 
-  const results = await Promise.allSettled(
-    providers.map(provider => provider.getSubtitles?.(ctx) || [])
-  );
+  try {
+    const subtitles =
+      await source
+        .getSubtitles(ctx);
 
-  const seen = new Set();
-
-  return results
-    .flatMap(result =>
-      result.status === "fulfilled" && Array.isArray(result.value)
-        ? result.value
-        : []
+    return Array.isArray(
+      subtitles
     )
-    .filter(subtitle => {
-      const key = `${subtitle.id}|${subtitle.lang}|${subtitle.url}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+      ? subtitles
+      : [];
+
+  } catch (error) {
+    console.error(
+      "[subtitles]",
+      error?.message ||
+      error
+    );
+
+    return [];
+  }
 }
 
-module.exports = { getSubtitles };
+
+module.exports = {
+  getSubtitles
+};
