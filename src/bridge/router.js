@@ -6,16 +6,11 @@ const {
   classifyProvider
 } = require("./classifier");
 
-const jsonDirect =
-  require("../engines/json-direct");
-
 const aggregator =
   require("../engines/aggregator");
 
-
 const TEST_VIDEO =
   "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4";
-
 
 function supportsType(
   plugin,
@@ -31,9 +26,7 @@ function supportsType(
   if (type === "movie") {
     return (
       types.includes("Movie") ||
-      types.includes(
-        "AnimeMovie"
-      )
+      types.includes("AnimeMovie")
     );
   }
 
@@ -46,19 +39,27 @@ function supportsType(
       "OVA"
     ].some(
       value =>
-        types.includes(
-          value
-        )
+        types.includes(value)
     );
   }
 
   return false;
 }
 
+function providerName(item) {
+  return String(
+    item.plugin?.name ||
+    item.plugin?.internalName ||
+    ""
+  )
+    .replace(
+      /Provider$/,
+      ""
+    )
+    .toLowerCase();
+}
 
-async function runProviders(
-  ctx
-) {
+async function runProviders(ctx) {
   const data =
     await loadRepo();
 
@@ -82,85 +83,75 @@ async function runProviders(
         })
       );
 
-  const aggregators =
-    routed.filter(
+  const cinemax21 =
+    routed.find(
       item =>
         item.classification
           .engine ===
-        "aggregator"
+          "aggregator" &&
+        providerName(item) ===
+          "cinemax21"
     );
 
-  const jsonProviders =
-    routed.filter(
-      item =>
-        item.classification
-          .engine ===
-        "json-direct"
+  if (!cinemax21) {
+    return [{
+      name:
+        "P12 DEBUG",
+
+      title:
+        "CineMax21 aggregator not found",
+
+      url:
+        TEST_VIDEO
+    }];
+  }
+
+  try {
+    const streams =
+      await aggregator.run(
+        cinemax21,
+        ctx
+      );
+
+    if (
+      Array.isArray(streams) &&
+      streams.length
+    ) {
+      return streams;
+    }
+
+    return [{
+      name:
+        "P12 DEBUG",
+
+      title:
+        "CineMax21 returned no stream",
+
+      url:
+        TEST_VIDEO
+    }];
+
+  } catch (error) {
+    console.error(
+      "[Project12 CineMax21]",
+      error
     );
 
+    return [{
+      name:
+        "P12 DEBUG",
 
-  const output = [{
-    name:
-      "Project12 Hybrid Router",
+      title:
+        String(
+          error?.message ||
+          error
+        ),
 
-    title:
-      `${data.providers.length} scanned • ` +
-      `${routed.length} support ${ctx.type} • ` +
-      `${aggregators.length} aggregator • ` +
-      `${jsonProviders.length} json-direct`,
-
-    url:
-      TEST_VIDEO
-  }];
-
-
-  for (
-    const provider
-    of aggregators.slice(0, 6)
-  ) {
-    try {
-      output.push(
-        ...await aggregator.run(
-          provider,
-          ctx
-        )
-      );
-
-    } catch (error) {
-      console.error(
-        "[aggregator]",
-        provider.plugin?.name,
-        error.message
-      );
-    }
+      url:
+        TEST_VIDEO
+    }];
   }
-
-
-  for (
-    const provider
-    of jsonProviders.slice(0, 6)
-  ) {
-    try {
-      output.push(
-        ...await jsonDirect.run(
-          provider,
-          ctx
-        )
-      );
-
-    } catch (error) {
-      console.error(
-        "[json-direct]",
-        provider.plugin?.name,
-        error.message
-      );
-    }
-  }
-
-
-  return output;
 }
-
 
 module.exports = {
   runProviders
