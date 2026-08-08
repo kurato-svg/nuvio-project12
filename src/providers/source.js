@@ -637,22 +637,88 @@ async function resolveMovie(ctx) {
     );
 
   const results =
-    findSearchResults(
-      searchJson
+  Array.isArray(searchJson?.data?.items)
+    ? searchJson.data.items
+    : findSearchResults(searchJson);
+
+if (!results.length) {
+  throw new Error(
+    `MovieBox search returned 0 results for: ${title}`
+  );
+}
+
+const wantedTitle =
+  normalise(title);
+
+const wantedYear =
+  getYear(ctx.meta);
+
+const ranked =
+  results
+    .map(item => {
+      const itemTitle =
+        item?.title ||
+        item?.name ||
+        "";
+
+      const itemYear =
+        String(
+          item?.releaseDate ||
+          item?.year ||
+          ""
+        ).match(
+          /\b(19|20)\d{2}\b/
+        )?.[0] || "";
+
+      const candidate =
+        normalise(itemTitle);
+
+      let score = 0;
+
+      if (candidate === wantedTitle) {
+        score += 100;
+      } else if (
+        candidate.includes(wantedTitle) ||
+        wantedTitle.includes(candidate)
+      ) {
+        score += 60;
+      }
+
+      if (
+        wantedYear &&
+        itemYear === wantedYear
+      ) {
+        score += 25;
+      }
+
+      return {
+        item,
+        score
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.score - a.score
     );
 
-  const match =
-    selectTitle(
-      results,
-      title,
-      getYear(ctx.meta)
-    );
+const match =
+  ranked[0]?.score >= 60
+    ? ranked[0].item
+    : null;
 
-  if (!match) {
-    throw new Error(
-      `MovieBox title not found: ${title}`
-    );
-  }
+if (!match) {
+  const preview =
+    results
+      .slice(0, 5)
+      .map(item =>
+        `${item?.title || item?.name || "?"} (${item?.releaseDate || item?.year || "?"})`
+      )
+      .join(" | ");
+
+  throw new Error(
+    `MovieBox results: ${preview}`
+  );
+}
 
   const subjectId =
     match.subjectId ??
