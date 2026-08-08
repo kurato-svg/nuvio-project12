@@ -11,16 +11,16 @@ const TREE_API =
 const TEST_VIDEO =
   "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4";
 
-const CACHE_MS = 30 * 60 * 1000;
-
 let cache = null;
 let cacheTime = 0;
+
+const CACHE_MS = 30 * 60 * 1000;
 
 async function fetchJson(url) {
   const res = await fetch(url, {
     headers: {
       Accept: "application/json",
-      "User-Agent": "nuvio-project12/0.4"
+      "User-Agent": "nuvio-project12-ir/0.5"
     }
   });
 
@@ -35,7 +35,7 @@ async function fetchText(url) {
   const res = await fetch(url, {
     headers: {
       Accept: "text/plain",
-      "User-Agent": "nuvio-project12/0.4"
+      "User-Agent": "nuvio-project12-ir/0.5"
     }
   });
 
@@ -50,119 +50,244 @@ function rawUrl(path) {
   return `https://raw.githubusercontent.com/${OWNER}/${REPO}/${BRANCH}/${path}`;
 }
 
-function classifySource(source) {
-  const types = [];
+function supportsType(plugin, type) {
+  const types = plugin.tvTypes || [];
 
-  if (
-    source.includes("app.get(") ||
-    source.includes("app.post(") ||
-    source.includes("app.put(")
-  ) {
-    types.push("HTTP");
+  if (type === "movie") {
+    return (
+      types.includes("Movie") ||
+      types.includes("AnimeMovie")
+    );
   }
 
-  if (
-    source.includes("parsedSafe") ||
-    source.includes("parseJson") ||
-    source.includes("JSONObject") ||
-    source.includes("JsonProperty")
-  ) {
-    types.push("JSON");
+  if (type === "series") {
+    return (
+      types.includes("TvSeries") ||
+      types.includes("AsianDrama") ||
+      types.includes("Anime") ||
+      types.includes("Cartoon") ||
+      types.includes("OVA")
+    );
   }
 
-  if (
-    source.includes("Jsoup") ||
-    source.includes(".select(") ||
-    source.includes(".selectFirst(")
-  ) {
-    types.push("HTML");
-  }
-
-  if (source.includes("loadExtractor(")) {
-    types.push("Extractor");
-  }
-
-  if (
-    source.includes("newExtractorLink") ||
-    source.includes("ExtractorLink(")
-  ) {
-    types.push("DirectLink");
-  }
-
-  if (
-    source.includes("SubtitleFile") ||
-    source.includes("newSubtitleFile")
-  ) {
-    types.push("Subtitle");
-  }
-
-  if (
-    source.includes("WebView") ||
-    source.includes("android.webkit") ||
-    source.includes("android.content.Context")
-  ) {
-    types.push("Android");
-  }
-
-  return types.length ? types : ["Unknown"];
+  return false;
 }
 
-function compatibilityScore(types) {
-  if (types.includes("Android")) {
-    return "needs-adapter";
-  }
-
-  if (
-    types.includes("HTTP") &&
-    types.includes("JSON") &&
-    types.includes("DirectLink")
-  ) {
-    return "excellent";
-  }
-
-  if (
-    types.includes("HTTP") &&
-    types.includes("HTML")
-  ) {
-    return "good";
-  }
-
-  if (types.includes("Extractor")) {
-    return "extractor-engine";
-  }
-
-  return "inspect";
-}
-
-function findProviderSource(tree, plugin) {
+function findSourcePath(tree, plugin) {
   const folder =
     plugin.internalName ||
     plugin.name;
 
   if (!folder) return null;
 
-  const files = tree.filter(
-    item =>
-      item.type === "blob" &&
-      item.path.startsWith(`${folder}/`) &&
-      item.path.endsWith(".kt")
+  const files = tree.filter(item =>
+    item.type === "blob" &&
+    item.path.startsWith(`${folder}/`) &&
+    item.path.endsWith(".kt")
   );
 
   if (!files.length) return null;
 
-  const preferred =
+  return (
     files.find(item =>
-      item.path.toLowerCase().includes("provider.kt")
+      /provider\.kt$/i.test(item.path)
     ) ||
     files.find(item =>
       item.path.includes("/src/main/kotlin/")
     ) ||
-    files[0];
-
-  return preferred.path;
+    files[0]
+  ).path;
 }
 
-async function loadBridge() {
+function extractFunction(source, name) {
+  const regex =
+    new RegExp(`fun\\s+${name}\\s*\\(`);
+
+  const match = regex.exec(source);
+
+  if (!match) {
+    return "";
+  }
+
+  const start = match.index;
+
+  const braceStart =
+    source.indexOf("{", start);
+
+  if (braceStart === -1) {
+    return source.slice(
+      start,
+      Math.min(start + 1200, source.length)
+    );
+  }
+
+  let depth = 0;
+
+  for (
+    let i = braceStart;
+    i < source.length;
+    i++
+  ) {
+    if (source[i] === "{") {
+      depth++;
+    }
+
+    if (source[i] === "}") {
+      depth--;
+
+      if (depth === 0) {
+        return source.slice(
+          start,
+          i + 1
+        );
+      }
+    }
+  }
+
+  return source.slice(
+    start,
+    Math.min(start + 5000, source.length)
+  );
+}
+
+function countHttp(body, method) {
+  const regex =
+    new RegExp(
+      `app\\.${method}\\s*\\(`,
+      "g"
+    );
+
+  return (
+    body.match(regex) || []
+  ).length;
+}
+
+function analyseFunction(body) {
+  return {
+    get: countHttp(body, "get"),
+    post: countHttp(body, "post"),
+    put: countHttp(body, "put"),
+    direct:
+      body.includes("newExtractorLink") ||
+      body.includes("ExtractorLink("),
+    extractor:
+      body.includes("loadExtractor("),
+    subtitle:
+      body.includes("newSubtitleFile") ||
+      body.includes("SubtitleFile("),
+    html:
+      body.includes(".select(") ||
+      body.includes(".selectFirst(") ||
+      body.includes("Jsoup"),
+    json:
+      body.includes("parsedSafe") ||
+      body.includes("parseJson") ||
+      body.includes("JsonProperty")
+  };
+}
+
+function createIR(source) {
+  const search =
+    analyseFunction(
+      extractFunction(source, "search")
+    );
+
+  const load =
+    analyseFunction(
+      extractFunction(source, "load")
+    );
+
+  const links =
+    analyseFunction(
+      extractFunction(source, "loadLinks")
+    );
+
+  const android =
+    source.includes("android.content") ||
+    source.includes("android.webkit") ||
+    source.includes("WebView");
+
+  let engine = "inspect";
+
+  if (android) {
+    engine = "android-adapter";
+  } else if (
+    links.direct &&
+    (
+      links.get > 0 ||
+      links.post > 0
+    )
+  ) {
+    engine = "generic-direct";
+  } else if (links.extractor) {
+    engine = "extractor-engine";
+  } else if (
+    search.html ||
+    load.html
+  ) {
+    engine = "html-engine";
+  } else if (
+    search.json ||
+    load.json
+  ) {
+    engine = "json-engine";
+  }
+
+  return {
+    search,
+    load,
+    links,
+    android,
+    engine
+  };
+}
+
+function compactOps(name, op) {
+  const parts = [];
+
+  if (op.get) {
+    parts.push(`GET${op.get}`);
+  }
+
+  if (op.post) {
+    parts.push(`POST${op.post}`);
+  }
+
+  if (op.put) {
+    parts.push(`PUT${op.put}`);
+  }
+
+  if (op.json) {
+    parts.push("JSON");
+  }
+
+  if (op.html) {
+    parts.push("HTML");
+  }
+
+  if (op.direct) {
+    parts.push("DIRECT");
+  }
+
+  if (op.extractor) {
+    parts.push("EXTRACTOR");
+  }
+
+  if (op.subtitle) {
+    parts.push("SUB");
+  }
+
+  return (
+    `${name}:` +
+    (
+      parts.length
+        ? parts.join("+")
+        : "none"
+    )
+  );
+}
+
+async function loadProviders() {
   if (
     cache &&
     Date.now() - cacheTime < CACHE_MS
@@ -170,68 +295,59 @@ async function loadBridge() {
     return cache;
   }
 
-  const repoInfo = await fetchJson(REPO_JSON);
+  const repoInfo =
+    await fetchJson(REPO_JSON);
 
   const pluginLists =
-    Array.isArray(repoInfo.pluginLists)
-      ? repoInfo.pluginLists
-      : [];
+    repoInfo.pluginLists || [];
 
-  if (!pluginLists.length) {
-    throw new Error("pluginLists missing");
-  }
-
-  const lists = await Promise.all(
-    pluginLists.map(url => fetchJson(url))
-  );
-
-  const plugins = lists
-    .flat()
-    .filter(plugin =>
-      plugin &&
-      plugin.status === 1
+  const pluginData =
+    await Promise.all(
+      pluginLists.map(url =>
+        fetchJson(url)
+      )
     );
+
+  const plugins =
+    pluginData
+      .flat()
+      .filter(plugin =>
+        plugin &&
+        plugin.status === 1
+      );
 
   const treeResult =
     await fetchJson(TREE_API);
 
   const tree =
-    Array.isArray(treeResult.tree)
-      ? treeResult.tree
-      : [];
+    treeResult.tree || [];
 
   const providers = [];
 
   for (const plugin of plugins) {
-    const sourcePath =
-      findProviderSource(tree, plugin);
+    const path =
+      findSourcePath(
+        tree,
+        plugin
+      );
 
-    if (!sourcePath) continue;
+    if (!path) continue;
 
     try {
       const source =
         await fetchText(
-          rawUrl(sourcePath)
+          rawUrl(path)
         );
 
-      const types =
-        classifySource(source);
-
       providers.push({
-        name:
-          plugin.name ||
-          plugin.internalName,
-        internalName:
-          plugin.internalName,
-        sourcePath,
-        types,
-        compatibility:
-          compatibilityScore(types)
+        plugin,
+        path,
+        ir: createIR(source)
       });
 
     } catch (error) {
       console.error(
-        "[scanner]",
+        "[IR]",
         plugin.name,
         error.message
       );
@@ -240,60 +356,114 @@ async function loadBridge() {
 
   cache = {
     repoInfo,
-    plugins,
     providers
   };
 
   cacheTime = Date.now();
 
   console.log(
-    `[Project12 Scanner] ` +
-    `${providers.length} Kotlin providers analysed`
+    `[Project12 IR] ${providers.length} providers parsed`
   );
 
   return cache;
 }
 
+function enginePriority(engine) {
+  const order = {
+    "generic-direct": 1,
+    "json-engine": 2,
+    "html-engine": 3,
+    "extractor-engine": 4,
+    "android-adapter": 5,
+    "inspect": 6
+  };
+
+  return order[engine] || 99;
+}
+
 async function getStreams(ctx) {
   try {
-    const bridge =
-      await loadBridge();
+    const data =
+      await loadProviders();
 
-    const results = [];
+    const matching =
+      data.providers
+        .filter(item =>
+          supportsType(
+            item.plugin,
+            ctx.type
+          )
+        )
+        .sort(
+          (a, b) =>
+            enginePriority(a.ir.engine) -
+            enginePriority(b.ir.engine)
+        );
 
-    results.push({
-      name: "Project12 Scanner",
-      title:
-        `${bridge.providers.length} Kotlin providers analysed from RAW GitHub`,
-      url: TEST_VIDEO
-    });
+    const output = [
+      {
+        name:
+          "Project12 IR Engine",
+        title:
+          `${data.providers.length} Kotlin providers parsed • ` +
+          `${matching.length} compatible with ${ctx.type}`,
+        url: TEST_VIDEO
+      }
+    ];
 
     for (
-      const provider
-      of bridge.providers.slice(0, 15)
+      const item
+      of matching.slice(0, 18)
     ) {
-      results.push({
+      const name =
+        (
+          item.plugin.name ||
+          item.plugin.internalName ||
+          "Unknown"
+        ).replace(
+          /Provider$/,
+          ""
+        );
+
+      output.push({
         name:
-          `P12 • ${provider.name.replace(/Provider$/, "")}`,
+          `P12 • ${name}`,
         title:
-          `${provider.compatibility} • ` +
-          provider.types.join(" + "),
+          `${item.ir.engine} • ` +
+          compactOps(
+            "S",
+            item.ir.search
+          ) +
+          " • " +
+          compactOps(
+            "L",
+            item.ir.load
+          ) +
+          " • " +
+          compactOps(
+            "X",
+            item.ir.links
+          ),
         url: TEST_VIDEO
       });
     }
 
-    return results;
+    return output;
 
   } catch (error) {
     console.error(
-      "[Project12 Scanner]",
+      "[Project12 IR]",
       error
     );
 
     return [{
-      name: "Project12 Scanner ERROR",
+      name:
+        "Project12 IR ERROR",
       title:
-        String(error.message || error),
+        String(
+          error.message ||
+          error
+        ),
       url: TEST_VIDEO
     }];
   }
