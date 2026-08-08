@@ -8,19 +8,14 @@ function extractFunction(source, name) {
     return "";
   }
 
-  const start =
-    match.index;
-
+  const start = match.index;
   const braceStart =
-    source.indexOf(
-      "{",
-      start
-    );
+    source.indexOf("{", start);
 
   if (braceStart < 0) {
     return source.slice(
       start,
-      start + 3000
+      start + 4000
     );
   }
 
@@ -49,7 +44,7 @@ function extractFunction(source, name) {
 
   return source.slice(
     start,
-    start + 8000
+    start + 10000
   );
 }
 
@@ -72,12 +67,12 @@ function analyse(body) {
       requests > 0,
 
     json:
-      /(parsedSafe|parseJson|JsonProperty|JSONObject)/.test(
+      /(parsedSafe|parseJson|tryParseJson|JsonProperty|JSONObject)/.test(
         body
       ),
 
     html:
-      /(Jsoup|\.select\(|\.selectFirst\()/.test(
+      /(document|Jsoup|\.select\(|\.selectFirst\()/.test(
         body
       ),
 
@@ -94,38 +89,71 @@ function analyse(body) {
     subtitle:
       /(newSubtitleFile|SubtitleFile\()/.test(
         body
+      ),
+
+    m3u8:
+      /(generateM3u8|M3u8Helper)/.test(
+        body
       )
   };
 }
 
 
 function classifyProvider(source) {
-  const search =
-    analyse(
-      extractFunction(
-        source,
-        "search"
-      )
+  const searchBody =
+    extractFunction(
+      source,
+      "search"
     );
+
+  const loadBody =
+    extractFunction(
+      source,
+      "load"
+    );
+
+  const linksBody =
+    extractFunction(
+      source,
+      "loadLinks"
+    );
+
+  const search =
+    analyse(searchBody);
 
   const load =
-    analyse(
-      extractFunction(
-        source,
-        "load"
-      )
-    );
+    analyse(loadBody);
 
   const links =
-    analyse(
-      extractFunction(
-        source,
-        "loadLinks"
-      )
-    );
+    analyse(linksBody);
 
   const android =
     /(android\.content|android\.webkit|WebView)/.test(
+      source
+    );
+
+  /*
+   * Look beyond loadLinks only.
+   * Helpers called by loadLinks may contain
+   * extractor/decryption logic.
+   */
+  const sourceHasExtractor =
+    /loadExtractor\s*\(/.test(
+      source
+    );
+
+  const sourceHasAes =
+    /(AesHelper|cryptoAESHandler|AES\/CBC)/.test(
+      source
+    );
+
+  const sourceHasSession =
+    /(gateToken|unlockAt|session\/claim|redeemUrl)/.test(
+      linksBody
+    );
+
+  const sourceHasM3u8 =
+    /(generateM3u8|M3u8Helper)/.test(
       source
     );
 
@@ -133,10 +161,6 @@ function classifyProvider(source) {
     "inspect";
 
 
-  /*
-   * Android / WebView always needs
-   * its own compatibility layer.
-   */
   if (android) {
     engine =
       "webview-adapter";
@@ -144,11 +168,28 @@ function classifyProvider(source) {
 
 
   /*
-   * Explicit CloudStream extractor flow.
+   * Stateful JSON playback.
+   * Example: play-info -> wait -> claim -> redeem.
    */
   else if (
     links.exists &&
-    links.extractor
+    links.http &&
+    sourceHasSession
+  ) {
+    engine =
+      "json-session";
+  }
+
+
+  /*
+   * Extractor or encrypted-source flow.
+   */
+  else if (
+    links.exists &&
+    (
+      sourceHasExtractor ||
+      sourceHasAes
+    )
   ) {
     engine =
       "extractor";
@@ -156,18 +197,16 @@ function classifyProvider(source) {
 
 
   /*
-   * JSON direct engine.
-   *
-   * Important:
-   * JSON in search/meta alone is NOT enough.
-   * loadLinks must actually do stream work.
+   * Direct JSON playback.
    */
   else if (
     links.exists &&
     links.http &&
+    links.direct &&
     (
       links.json ||
-      links.direct
+      search.json ||
+      load.json
     )
   ) {
     engine =
@@ -176,8 +215,23 @@ function classifyProvider(source) {
 
 
   /*
-   * HTML direct engine.
+   * Direct HLS generation without
+   * a CloudStream extractor.
    */
+  else if (
+    links.exists &&
+    links.http &&
+    sourceHasM3u8 &&
+    (
+      links.json ||
+      search.json
+    )
+  ) {
+    engine =
+      "json-direct";
+  }
+
+
   else if (
     links.exists &&
     links.http &&
@@ -188,10 +242,6 @@ function classifyProvider(source) {
   }
 
 
-  /*
-   * Provider uses JSON only for
-   * metadata/search.
-   */
   else if (
     search.json ||
     load.json
@@ -201,10 +251,6 @@ function classifyProvider(source) {
   }
 
 
-  /*
-   * HTML search/detail provider,
-   * but stream execution is not yet known.
-   */
   else if (
     search.html ||
     load.html
@@ -213,12 +259,24 @@ function classifyProvider(source) {
       "metadata-html";
   }
 
+
   return {
     engine,
     search,
     load,
     links,
-    android
+
+    flags: {
+      android,
+      extractor:
+        sourceHasExtractor,
+      aes:
+        sourceHasAes,
+      session:
+        sourceHasSession,
+      m3u8:
+        sourceHasM3u8
+    }
   };
 }
 
