@@ -1,9 +1,12 @@
+const streams = require("../../streams.json");
+
 async function getStreams(ctx) {
-  return [{
-    name: "Project12 Resolver",
-    title: `Resolver loaded: ${ctx.meta?.name || ctx.imdbId}`,
-    url: "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4"
-  }];
+  const id =
+    ctx.type === "series"
+      ? `${ctx.imdbId}:${ctx.season}:${ctx.episode}`
+      : ctx.imdbId;
+
+  return streams[id] || [];
 }
 
 async function getSubtitles() {
