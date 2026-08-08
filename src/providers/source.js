@@ -1,5 +1,6 @@
 const providers = [
-  require("./kisskh")
+  require("./kisskh"),
+  require("./onetouchtv")
 ];
 
 const PROVIDER_TIMEOUT_MS =
