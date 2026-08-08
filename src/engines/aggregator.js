@@ -1,39 +1,26 @@
-const OWNER =
-  "HatsuneMikuUwU";
-
-const REPO =
-  "cloudstream-extensions-uwu";
-
-const BRANCH =
-  "master";
-
-const TEST_VIDEO =
-  "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4";
+const OWNER = "HatsuneMikuUwU";
+const REPO = "cloudstream-extensions-uwu";
+const BRANCH = "master";
 
 const TREE_API =
   `https://api.github.com/repos/${OWNER}/${REPO}/git/trees/${BRANCH}?recursive=1`;
 
+const TEST_VIDEO =
+  "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4";
+
+const CACHE_MS = 30 * 60 * 1000;
+
 let treeCache = null;
 let treeCacheTime = 0;
 
-const CACHE_MS =
-  30 * 60 * 1000;
-
 
 async function fetchJson(url) {
-  const res =
-    await fetch(
-      url,
-      {
-        headers: {
-          Accept:
-            "application/json",
-
-          "User-Agent":
-            "nuvio-project12-aggregator/1.0"
-        }
-      }
-    );
+  const res = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "nuvio-project12-aggregator/1.1"
+    }
+  });
 
   if (!res.ok) {
     throw new Error(
@@ -46,19 +33,12 @@ async function fetchJson(url) {
 
 
 async function fetchText(url) {
-  const res =
-    await fetch(
-      url,
-      {
-        headers: {
-          Accept:
-            "text/plain",
-
-          "User-Agent":
-            "nuvio-project12-aggregator/1.0"
-        }
-      }
-    );
+  const res = await fetch(url, {
+    headers: {
+      Accept: "text/plain",
+      "User-Agent": "nuvio-project12-aggregator/1.1"
+    }
+  });
 
   if (!res.ok) {
     throw new Error(
@@ -78,13 +58,33 @@ function rawUrl(path) {
 }
 
 
-function extractFunction(
-  source,
-  name
-) {
+async function loadTree() {
+  if (
+    treeCache &&
+    Date.now() - treeCacheTime < CACHE_MS
+  ) {
+    return treeCache;
+  }
+
+  const json =
+    await fetchJson(TREE_API);
+
+  treeCache =
+    Array.isArray(json?.tree)
+      ? json.tree
+      : [];
+
+  treeCacheTime =
+    Date.now();
+
+  return treeCache;
+}
+
+
+function extractFunction(source, name) {
   const match =
     new RegExp(
-      `fun\\s+${name}\\s*\\(`
+      `(?:suspend\\s+)?fun\\s+${name}\\s*\\(`
     ).exec(source);
 
   if (!match) {
@@ -101,10 +101,7 @@ function extractFunction(
     );
 
   if (braceStart < 0) {
-    return source.slice(
-      start,
-      start + 4000
-    );
+    return "";
   }
 
   let depth = 0;
@@ -130,15 +127,12 @@ function extractFunction(
     }
   }
 
-  return source.slice(
-    start,
-    start + 12000
-  );
+  return "";
 }
 
 
-function helperNames(source) {
-  const body =
+function getHelperNames(source) {
+  const loadLinks =
     extractFunction(
       source,
       "loadLinks"
@@ -147,7 +141,7 @@ function helperNames(source) {
   return [
     ...new Set(
       [
-        ...body.matchAll(
+        ...loadLinks.matchAll(
           /\b(invoke[A-Z][A-Za-z0-9_]*)\s*\(/g
         )
       ].map(
@@ -159,70 +153,116 @@ function helperNames(source) {
 }
 
 
-async function loadTree() {
-  if (
-    treeCache &&
-    Date.now() -
-      treeCacheTime <
-      CACHE_MS
-  ) {
-    return treeCache;
+function classifyHelper(body) {
+  if (!body) {
+    return "missing";
   }
 
-  const json =
-    await fetchJson(
-      TREE_API
+  const webview =
+    /(WebViewResolver|android\.webkit|WebView)/.test(
+      body
     );
 
-  treeCache =
-    Array.isArray(
-      json?.tree
+  const extractor =
+    /loadExtractor\s*\(/.test(
+      body
+    );
+
+  const aes =
+    /(cryptoAESHandler|AesHelper|AES\/CBC)/.test(
+      body
+    );
+
+  const direct =
+    /(newExtractorLink|ExtractorLink\()/.test(
+      body
+    );
+
+  const m3u8 =
+    /(generateM3u8|M3u8Helper)/.test(
+      body
+    );
+
+  const http =
+    /app\.(get|post|put|delete)\s*\(/.test(
+      body
+    );
+
+  const json =
+    /(parsedSafe|parseJson|tryParseJson|JSONObject)/.test(
+      body
+    );
+
+  const html =
+    /(document|Jsoup|\.select\(|\.selectFirst\()/.test(
+      body
+    );
+
+
+  if (webview) {
+    return "webview";
+  }
+
+  if (aes) {
+    return "encrypted";
+  }
+
+  if (extractor) {
+    return "extractor";
+  }
+
+  if (
+    http &&
+    json &&
+    (
+      direct ||
+      m3u8
     )
-      ? json.tree
-      : [];
+  ) {
+    return "direct-json";
+  }
 
-  treeCacheTime =
-    Date.now();
+  if (
+    http &&
+    html &&
+    direct
+  ) {
+    return "direct-html";
+  }
 
-  return treeCache;
+  if (
+    http &&
+    direct
+  ) {
+    return "direct";
+  }
+
+  return "unsupported";
 }
 
 
-function providerFolder(
-  provider
-) {
-  return (
-    provider.plugin?.internalName ||
-    provider.plugin?.name ||
-    ""
-  );
-}
-
-
-async function loadProviderSources(
-  provider
-) {
+async function loadAllSources(provider) {
   const tree =
     await loadTree();
 
   const folder =
-    providerFolder(
-      provider
-    );
+    provider.plugin?.internalName ||
+    provider.plugin?.name;
+
+  if (!folder) {
+    return [];
+  }
 
   const paths =
     tree
       .filter(
         item =>
           item?.type === "blob" &&
-          typeof item.path ===
-            "string" &&
+          typeof item.path === "string" &&
           item.path.startsWith(
             `${folder}/`
           ) &&
-          item.path.endsWith(
-            ".kt"
-          )
+          item.path.endsWith(".kt")
       )
       .map(
         item =>
@@ -231,14 +271,10 @@ async function loadProviderSources(
 
   const sources = [];
 
-  for (
-    const path
-    of paths
-  ) {
+  for (const path of paths) {
     try {
       sources.push({
         path,
-
         text:
           await fetchText(
             rawUrl(path)
@@ -247,7 +283,7 @@ async function loadProviderSources(
 
     } catch (error) {
       console.error(
-        "[aggregator-source]",
+        "[agg source]",
         path,
         error.message
       );
@@ -262,35 +298,38 @@ function locateHelper(
   helper,
   sources
 ) {
-  const pattern =
-    new RegExp(
-      `\\bfun\\s+${helper}\\s*\\(`
-    );
+  for (const source of sources) {
+    const body =
+      extractFunction(
+        source.text,
+        helper
+      );
 
-  for (
-    const source
-    of sources
-  ) {
-    if (
-      pattern.test(
-        source.text
-      )
-    ) {
-      return source.path;
+    if (body) {
+      return {
+        helper,
+        body,
+        path:
+          source.path,
+        type:
+          classifyHelper(body)
+      };
     }
   }
 
-  return null;
+  return {
+    helper,
+    body: "",
+    path: null,
+    type: "missing"
+  };
 }
 
 
-async function run(
-  provider,
-  ctx
-) {
+async function run(provider, ctx) {
   void ctx;
 
-  const name =
+  const providerName =
     (
       provider.plugin?.name ||
       provider.plugin?.internalName ||
@@ -301,64 +340,77 @@ async function run(
     );
 
   const helpers =
-    helperNames(
+    getHelperNames(
       provider.source
     );
 
   const sources =
-    await loadProviderSources(
+    await loadAllSources(
       provider
     );
 
   const resolved =
     helpers.map(
-      helper => ({
-        helper,
-
-        path:
-          locateHelper(
-            helper,
-            sources
-          )
-      })
+      helper =>
+        locateHelper(
+          helper,
+          sources
+        )
     );
 
-  const found =
+
+  /*
+   * Fokus sekarang hanya helper yang
+   * secara struktur paling mudah
+   * dijalankan oleh generic engine.
+   *
+   * WebView, encryption dan extractor
+   * kompleks kita skip dahulu.
+   */
+  const runnable =
     resolved.filter(
       item =>
-        item.path
+        [
+          "direct-json",
+          "direct-html",
+          "direct"
+        ].includes(
+          item.type
+        )
     );
 
-  const missing =
+
+  const skipped =
     resolved.filter(
       item =>
-        !item.path
+        ![
+          "direct-json",
+          "direct-html",
+          "direct"
+        ].includes(
+          item.type
+        )
     );
+
 
   const preview =
-    found
-      .slice(0, 8)
+    runnable
+      .slice(0, 10)
       .map(
         item =>
-          item.helper.replace(
-            /^invoke/,
-            ""
-          )
+          `${item.helper.replace(/^invoke/, "")}:${item.type}`
       )
       .join(", ");
 
+
   return [{
     name:
-      `P12 AGG • ${name}`,
+      `P12 AGG • ${providerName}`,
 
     title:
       `${helpers.length} helpers • ` +
-      `${found.length} located` +
-      (
-        missing.length
-          ? ` • ${missing.length} unresolved`
-          : ""
-      ) +
+      `${runnable.length} runnable • ` +
+      `${skipped.length} skipped` +
       (
         preview
           ? ` • ${preview}`
