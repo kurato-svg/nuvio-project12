@@ -207,36 +207,13 @@ function getYear(ctx) {
     : null;
 }
 
-
-function getYear(ctx) {
-  const values = [
-    ctx.meta?.year,
-    ctx.meta?.releaseInfo,
-    ctx.meta?.released,
-    ctx.meta?.release_date
-  ];
-
-  for (
-    const value
-    of values
-  ) {
-    const match =
-      String(
-        value || ""
-      ).match(
-        /\b(19|20)\d{2}\b/
-      );
-
-    if (match) {
-      return Number(
-        match[0]
-      );
-    }
-  }
-
-  return null;
+function getTitle(ctx) {
+  return String(
+    ctx?.title ||
+    ctx?.originalTitle ||
+    ""
+  ).trim();
 }
-
 
 function searchQueries(ctx) {
   const title =
