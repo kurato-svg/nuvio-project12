@@ -2,72 +2,75 @@ const OWNER = "HatsuneMikuUwU";
 const REPO = "cloudstream-extensions-uwu";
 const BRANCH = "master";
 
-const TREE_API =
-  `https://api.github.com/repos/${OWNER}/${REPO}/git/trees/${BRANCH}?recursive=1`;
-
 const CACHE_MS = 30 * 60 * 1000;
 
-let treeCache = null;
-let treeCacheTime = 0;
+let sourceCache = new Map();
+
 
 async function requestText(url, options = {}) {
   const res = await fetch(url, {
     ...options,
+
     headers: {
-      "User-Agent": "nuvio-project12-aggregator/1.2",
+      "User-Agent":
+        "nuvio-project12-aggregator/1.3",
+
       ...(options.headers || {})
     }
   });
 
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status}: ${url}`);
+    throw new Error(
+      `HTTP ${res.status}: ${url}`
+    );
   }
 
   return res.text();
 }
 
-async function fetchJson(url, options = {}) {
-  const text = await requestText(url, {
-    ...options,
-    headers: {
-      Accept: "application/json",
-      ...(options.headers || {})
-    }
-  });
+
+async function fetchJson(
+  url,
+  options = {}
+) {
+  const text =
+    await requestText(
+      url,
+      {
+        ...options,
+
+        headers: {
+          Accept:
+            "application/json",
+
+          ...(options.headers || {})
+        }
+      }
+    );
 
   try {
     return JSON.parse(text);
+
   } catch {
-    throw new Error(`Invalid JSON: ${url}`);
+    throw new Error(
+      `Invalid JSON: ${url}`
+    );
   }
 }
+
 
 function rawUrl(path) {
-  return `https://raw.githubusercontent.com/${OWNER}/${REPO}/${BRANCH}/${path}`;
+  return (
+    `https://raw.githubusercontent.com/` +
+    `${OWNER}/${REPO}/${BRANCH}/${path}`
+  );
 }
 
-async function loadTree() {
-  if (
-    treeCache &&
-    Date.now() - treeCacheTime < CACHE_MS
-  ) {
-    return treeCache;
-  }
 
-  const json =
-    await fetchJson(TREE_API);
-
-  treeCache =
-    Array.isArray(json?.tree)
-      ? json.tree
-      : [];
-
-  treeCacheTime = Date.now();
-
-  return treeCache;
-}
-
-function extractFunction(source, name) {
+function extractFunction(
+  source,
+  name
+) {
   const match =
     new RegExp(
       `(?:suspend\\s+)?fun\\s+${name}\\s*\\(`
@@ -77,10 +80,14 @@ function extractFunction(source, name) {
     return "";
   }
 
-  const start = match.index;
+  const start =
+    match.index;
 
   const braceStart =
-    source.indexOf("{", start);
+    source.indexOf(
+      "{",
+      start
+    );
 
   if (braceStart < 0) {
     return "";
@@ -112,57 +119,201 @@ function extractFunction(source, name) {
   return "";
 }
 
-async function loadAllSources(provider) {
-  const tree =
-    await loadTree();
 
-  const folder =
-    provider.plugin?.internalName ||
-    provider.plugin?.name;
+function importedSourcePaths(
+  provider
+) {
+  const source =
+    provider.source || "";
 
-  if (!folder) {
-    throw new Error(
-      "Aggregator provider folder missing"
+  const sourcePath =
+    provider.sourcePath || "";
+
+  const marker =
+    "/src/main/kotlin/";
+
+  const markerIndex =
+    sourcePath.indexOf(
+      marker
     );
+
+  if (markerIndex < 0) {
+    return [
+      sourcePath
+    ].filter(Boolean);
+  }
+
+  const root =
+    sourcePath.slice(
+      0,
+      markerIndex +
+        marker.length
+    );
+
+  const packageName =
+    source.match(
+      /^\s*package\s+([A-Za-z0-9_.]+)/m
+    )?.[1];
+
+  if (!packageName) {
+    return [
+      sourcePath
+    ].filter(Boolean);
   }
 
   const paths =
-    tree
-      .filter(
-        item =>
-          item?.type === "blob" &&
-          typeof item.path === "string" &&
-          item.path.startsWith(
-            `${folder}/`
-          ) &&
-          item.path.endsWith(".kt")
+    new Set();
+
+  paths.add(
+    sourcePath
+  );
+
+  const imports = [
+    ...source.matchAll(
+      /^\s*import\s+([A-Za-z0-9_.]+)\s*$/gm
+    )
+  ];
+
+  for (
+    const match
+    of imports
+  ) {
+    const imported =
+      match[1];
+
+    if (
+      !imported.startsWith(
+        `${packageName}.`
       )
-      .map(
-        item =>
-          item.path
-      );
+    ) {
+      continue;
+    }
+
+    const remaining =
+      imported
+        .slice(
+          packageName.length + 1
+        )
+        .split(".");
+
+    const className =
+      remaining[0];
+
+    if (
+      !className ||
+      !/^[A-Z]/.test(
+        className
+      )
+    ) {
+      continue;
+    }
+
+    const path =
+      root +
+      packageName.replace(
+        /\./g,
+        "/"
+      ) +
+      "/" +
+      className +
+      ".kt";
+
+    paths.add(path);
+  }
+
+  return [
+    ...paths
+  ];
+}
+
+
+async function loadRawSource(
+  path
+) {
+  const cached =
+    sourceCache.get(path);
+
+  if (
+    cached &&
+    Date.now() -
+      cached.time <
+      CACHE_MS
+  ) {
+    return cached.text;
+  }
+
+  const text =
+    await requestText(
+      rawUrl(path),
+      {
+        headers: {
+          Accept:
+            "text/plain"
+        }
+      }
+    );
+
+  sourceCache.set(
+    path,
+    {
+      time:
+        Date.now(),
+
+      text
+    }
+  );
+
+  return text;
+}
+
+
+async function loadAllSources(
+  provider
+) {
+  const paths =
+    importedSourcePaths(
+      provider
+    );
 
   const sources = [];
 
-  for (const path of paths) {
+  if (
+    provider.source &&
+    provider.sourcePath
+  ) {
+    sources.push({
+      path:
+        provider.sourcePath,
+
+      text:
+        provider.source
+    });
+  }
+
+  for (
+    const path
+    of paths
+  ) {
+    if (
+      path ===
+      provider.sourcePath
+    ) {
+      continue;
+    }
+
     try {
       sources.push({
         path,
 
         text:
-          await requestText(
-            rawUrl(path),
-            {
-              headers: {
-                Accept: "text/plain"
-              }
-            }
+          await loadRawSource(
+            path
           )
       });
 
     } catch (error) {
-      console.error(
-        "[agg source]",
+      console.log(
+        "[agg skip import]",
         path,
         error.message
       );
@@ -172,21 +323,33 @@ async function loadAllSources(provider) {
   return sources;
 }
 
-function parseConstants(sources) {
+
+function parseConstants(
+  sources
+) {
   const constants = {};
 
   const regex =
-    /(?:private\s+)?(?:const\s+)?val\s+(\w+)\s*=\s*"([^"]*)"/g;
+    /(?:private\s+)?(?:public\s+)?(?:internal\s+)?(?:const\s+)?(?:val|var)\s+(\w+)(?:\s*:\s*[A-Za-z0-9_<>?.]+)?\s*=\s*"([^"]*)"/g;
 
-  for (const source of sources) {
+  for (
+    const source
+    of sources
+  ) {
     let match;
 
     while (
-      (match = regex.exec(source.text))
+      (
+        match =
+          regex.exec(
+            source.text
+          )
+      )
     ) {
       constants[
         match[1]
-      ] = match[2];
+      ] =
+        match[2];
     }
 
     regex.lastIndex = 0;
@@ -195,11 +358,15 @@ function parseConstants(sources) {
   return constants;
 }
 
+
 function locateHelper(
   name,
   sources
 ) {
-  for (const source of sources) {
+  for (
+    const source
+    of sources
+  ) {
     const body =
       extractFunction(
         source.text,
@@ -219,7 +386,10 @@ function locateHelper(
   return null;
 }
 
-function readNextAction(body) {
+
+function readNextAction(
+  body
+) {
   return (
     /"Next-Action"\s+to\s+"([^"]+)"/
       .exec(body)?.[1] ||
@@ -227,22 +397,31 @@ function readNextAction(body) {
   );
 }
 
-function readSessionId(body) {
+
+function readSessionId(
+  body
+) {
   return (
-    /sessionId":"([^"]+)"/
+    /sessionId\s*=\s*"([^"]+)"/
       .exec(body)?.[1] ||
-    `session_${Date.now()}_project12`
+    `project12_${Date.now()}`
   );
 }
 
-function metaTmdbId(ctx) {
+
+function metaTmdbId(
+  ctx
+) {
   const values = [
     ctx.meta?.moviedb_id,
     ctx.meta?.tmdb_id,
     ctx.meta?.tmdbId
   ];
 
-  for (const value of values) {
+  for (
+    const value
+    of values
+  ) {
     const id =
       Number(value);
 
@@ -256,6 +435,7 @@ function metaTmdbId(ctx) {
 
   return null;
 }
+
 
 async function resolveTmdbId(
   ctx,
@@ -285,7 +465,8 @@ async function resolveTmdbId(
   }
 
   const url =
-    `${tmdbAPI}/find/${encodeURIComponent(ctx.imdbId)}` +
+    `${tmdbAPI}/find/` +
+    `${encodeURIComponent(ctx.imdbId)}` +
     `?api_key=${encodeURIComponent(apiKey)}` +
     `&external_source=imdb_id`;
 
@@ -298,7 +479,9 @@ async function resolveTmdbId(
       : json?.movie_results?.[0];
 
   const id =
-    Number(item?.id);
+    Number(
+      item?.id
+    );
 
   if (
     !Number.isInteger(id) ||
@@ -312,9 +495,15 @@ async function resolveTmdbId(
   return id;
 }
 
-function parseActionResponse(text) {
+
+function parseActionResponse(
+  text
+) {
+  const raw =
+    String(text || "");
+
   const lines =
-    String(text)
+    raw
       .split(/\r?\n/)
       .map(
         line =>
@@ -322,39 +511,54 @@ function parseActionResponse(text) {
       )
       .filter(Boolean);
 
-  const line =
-    lines.find(
-      value =>
-        value.startsWith("1:")
-    );
+  for (
+    const line
+    of lines
+  ) {
+    const index =
+      line.indexOf(":");
 
-  if (line) {
-    try {
-      return JSON.parse(
-        line.slice(2).trim()
+    if (
+      index <= 0
+    ) {
+      continue;
+    }
+
+    const prefix =
+      line.slice(
+        0,
+        index
       );
-    } catch {}
-  }
 
-  const index =
-    text.indexOf("1:");
+    if (
+      !/^\d+$/.test(
+        prefix
+      )
+    ) {
+      continue;
+    }
 
-  if (index >= 0) {
+    const payload =
+      line.slice(
+        index + 1
+      ).trim();
+
     try {
       return JSON.parse(
-        text
-          .slice(index + 2)
-          .trim()
+        payload
       );
     } catch {}
   }
 
   try {
-    return JSON.parse(text);
+    return JSON.parse(
+      raw
+    );
   } catch {
     return null;
   }
 }
+
 
 async function runMapple(
   helper,
@@ -396,14 +600,21 @@ async function runMapple(
       : "movie";
 
   const season =
-    Number(ctx.season || 0);
+    Number(
+      ctx.season || 0
+    );
 
   const episode =
-    Number(ctx.episode || 0);
+    Number(
+      ctx.episode || 0
+    );
 
   if (
     isSeries &&
-    (!season || !episode)
+    (
+      !season ||
+      !episode
+    )
   ) {
     throw new Error(
       "Season or episode missing"
@@ -415,40 +626,47 @@ async function runMapple(
       ? `/watch/${mediaType}/${season}-${episode}/${tmdbId}`
       : `/watch/${mediaType}/${tmdbId}`;
 
-  const payload = [{
-    mediaId:
-      tmdbId,
+  const payload = [
+    {
+      mediaId:
+        tmdbId,
 
-    mediaType,
+      mediaType,
 
-    tv_slug:
-      isSeries
-        ? `${season}-${episode}`
-        : "",
+      tv_slug:
+        isSeries
+          ? `${season}-${episode}`
+          : "",
 
-    source:
-      "mapple",
+      source:
+        "mapple",
 
-    sessionId:
-      readSessionId(
-        helper.body
-      )
-  }];
+      sessionId:
+        readSessionId(
+          helper.body
+        )
+    }
+  ];
 
   const text =
     await requestText(
       `${mappleAPI}${path}`,
       {
-        method: "POST",
+        method:
+          "POST",
 
         headers: {
-          Accept: "*/*",
+          Accept:
+            "*/*",
 
           "Content-Type":
             "text/plain;charset=UTF-8",
 
           "Next-Action":
-            nextAction
+            nextAction,
+
+          Referer:
+            `${mappleAPI}/`
         },
 
         body:
@@ -464,10 +682,12 @@ async function runMapple(
     );
 
   const streamUrl =
-    json?.data?.stream_url;
+    json?.data?.stream_url ||
+    json?.stream_url;
 
   if (
-    typeof streamUrl !== "string" ||
+    typeof streamUrl !==
+      "string" ||
     !/^https?:\/\//i.test(
       streamUrl
     )
@@ -477,31 +697,35 @@ async function runMapple(
     );
   }
 
-  return [{
-    name:
-      "P12 • CineMax21",
+  return [
+    {
+      name:
+        "P12 • CineMax21",
 
-    title:
-      "Mapple",
+      title:
+        "Mapple",
 
-    url:
-      streamUrl,
+      url:
+        streamUrl,
 
-    behaviorHints: {
-      notWebReady: true,
+      behaviorHints: {
+        notWebReady:
+          true,
 
-      proxyHeaders: {
-        request: {
-          Referer:
-            `${mappleAPI}/`,
+        proxyHeaders: {
+          request: {
+            Referer:
+              `${mappleAPI}/`,
 
-          Accept:
-            "*/*"
+            Accept:
+              "*/*"
+          }
         }
       }
     }
-  }];
+  ];
 }
+
 
 async function run(
   provider,
@@ -520,7 +744,8 @@ async function run(
       .toLowerCase();
 
   if (
-    name !== "cinemax21"
+    name !==
+    "cinemax21"
   ) {
     return [];
   }
@@ -529,6 +754,14 @@ async function run(
     await loadAllSources(
       provider
     );
+
+  if (
+    !sources.length
+  ) {
+    throw new Error(
+      "CineMax21 sources unavailable"
+    );
+  }
 
   const constants =
     parseConstants(
@@ -553,6 +786,7 @@ async function run(
     constants
   );
 }
+
 
 module.exports = {
   run
