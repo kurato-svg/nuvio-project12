@@ -1355,7 +1355,7 @@ async function resolveStreams(ctx) {
     `[onetouchtv sources] ${sources.length}`
   );
 
-  const results =
+    const results =
     await Promise.allSettled(
       sources.map(
         async (
@@ -1377,4 +1377,167 @@ async function resolveStreams(ctx) {
             return null;
           }
 
-          return s
+          return streamObject(
+            source,
+            url,
+            index
+          );
+        }
+      )
+    );
+
+  const streams =
+    results
+      .filter(
+        result =>
+          result.status ===
+            "fulfilled" &&
+          result.value
+      )
+      .map(
+        result =>
+          result.value
+      );
+
+  const seen =
+    new Set();
+
+  return streams.filter(
+    stream => {
+      if (
+        !stream?.url ||
+        seen.has(
+          stream.url
+        )
+      ) {
+        return false;
+      }
+
+      seen.add(
+        stream.url
+      );
+
+      return true;
+    }
+  );
+}
+
+
+function subtitleLanguage(item) {
+  return String(
+    item?.name ||
+    item?.label ||
+    "Unknown"
+  ).trim();
+}
+
+
+async function resolveSubtitles(ctx) {
+  const resolved =
+    await resolveEpisode(
+      ctx
+    );
+
+  const episode =
+    await getEpisode(
+      resolved
+    );
+
+  const tracks =
+    Array.isArray(
+      episode?.track
+    )
+      ? episode.track
+      : [];
+
+  console.log(
+    `[onetouchtv subtitles] ${tracks.length}`
+  );
+
+  return tracks
+    .map(
+      (
+        item,
+        index
+      ) => ({
+        id:
+          `onetouchtv-` +
+          `${resolved.providerId}-` +
+          `${ctx.episode || 1}-` +
+          `${index}`,
+
+        lang:
+          subtitleLanguage(
+            item
+          ),
+
+        url:
+          item?.file
+      })
+    )
+    .filter(
+      item =>
+        typeof item.url ===
+          "string" &&
+        /^https?:\/\//i.test(
+          item.url
+        )
+    );
+}
+
+
+async function getStreams(ctx) {
+  try {
+    return await memo(
+      streamCache,
+      cacheKey(ctx),
+      STREAM_TTL,
+      () =>
+        resolveStreams(
+          ctx
+        )
+    );
+
+  } catch (error) {
+    console.error(
+      "[onetouchtv streams]",
+      error?.message ||
+      error
+    );
+
+    return [];
+  }
+}
+
+
+async function getSubtitles(ctx) {
+  try {
+    return await memo(
+      subtitleCache,
+      cacheKey(ctx),
+      SUBTITLE_TTL,
+      () =>
+        resolveSubtitles(
+          ctx
+        )
+    );
+
+  } catch (error) {
+    console.error(
+      "[onetouchtv subtitles]",
+      error?.message ||
+      error
+    );
+
+    return [];
+  }
+}
+
+
+module.exports = {
+  name:
+    "OneTouchTV",
+
+  getStreams,
+  getSubtitles
+};
