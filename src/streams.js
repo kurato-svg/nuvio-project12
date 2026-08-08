@@ -1,31 +1,98 @@
-const { parseId } = require("./id");
-const { getMeta } = require("./cinemeta");
-const demo = require("./providers/demo");
-const source = require("./providers/source");
+const {
+  parseId
+} = require("./id");
 
-const providers = [source];
+const {
+  getMeta
+} = require("./cinemeta");
 
-async function getStreams(type, id) {
-  const parsed = parseId(type, id);
+const {
+  buildContext
+} = require("./context");
+
+const source =
+  require("./providers/source");
+
+
+async function getStreams(
+  type,
+  id
+) {
+  const parsed =
+    parseId(
+      type,
+      id
+    );
 
   let meta = null;
+
   try {
-    meta = await getMeta(type, parsed.imdbId);
+    meta =
+      await getMeta(
+        type,
+        parsed.imdbId
+      );
+
   } catch (error) {
-    console.warn("[cinemeta]", error.message);
+    console.warn(
+      "[cinemeta]",
+      error?.message ||
+      error
+    );
   }
 
-  const ctx = { ...parsed, meta };
+  const ctx =
+    buildContext(
+      parsed,
+      meta
+    );
 
-  const results = await Promise.allSettled(
-    providers.map(provider => provider.getStreams?.(ctx) || [])
+  console.log(
+    "[context]",
+    JSON.stringify({
+      type:
+        ctx.type,
+
+      imdbId:
+        ctx.imdbId,
+
+      title:
+        ctx.title,
+
+      year:
+        ctx.year,
+
+      season:
+        ctx.season,
+
+      episode:
+        ctx.episode
+    })
   );
 
-  return results.flatMap(result =>
-    result.status === "fulfilled" && Array.isArray(result.value)
-      ? result.value
-      : []
-  );
+  try {
+    const streams =
+      await source
+        .getStreams(ctx);
+
+    return Array.isArray(
+      streams
+    )
+      ? streams
+      : [];
+
+  } catch (error) {
+    console.error(
+      "[streams]",
+      error?.message ||
+      error
+    );
+
+    return [];
+  }
 }
 
-module.exports = { getStreams };
+
+module.exports = {
+  getStreams
+};
