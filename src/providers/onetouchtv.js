@@ -12,11 +12,6 @@ const ONETOUCH_HOST =
 const USER_AGENT =
   "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0 Mobile Safari/537.36";
 
-
-/*
- * OneTouchTV response encryption
- * AES-256-CBC
- */
 const KEY_HEX =
   Buffer.from(
     "Njk2ZDM3MzI2MzY4NjE3MjUwNjE3MzczNzc2ZjcyNjQ2ZjY2NjQ0OTZlNjk3NDU2NjU2Mzc0NmY3MjUzNzQ2ZA==",
@@ -41,7 +36,6 @@ const IV =
     "hex"
   );
 
-
 const LOOKUP_TTL =
   4 * 60 * 60 * 1000;
 
@@ -53,7 +47,6 @@ const STREAM_TTL =
 
 const SUBTITLE_TTL =
   60 * 60 * 1000;
-
 
 const lookupCache =
   new Map();
@@ -135,7 +128,7 @@ function isOneTouchApi(url) {
 async function request(
   url,
   options = {},
-  timeoutMs = 10000
+  timeoutMs = 8000
 ) {
   const controller =
     new AbortController();
@@ -144,7 +137,6 @@ async function request(
     setTimeout(
       () =>
         controller.abort(),
-
       timeoutMs
     );
 
@@ -203,10 +195,6 @@ async function request(
 }
 
 
-/*
- * OneTouchTV uses a modified
- * Base64 alphabet.
- */
 function normaliseCipher(value) {
   return String(
     value || ""
@@ -215,12 +203,10 @@ function normaliseCipher(value) {
       /-_\./g,
       "/"
     )
-
     .replace(
       /@/g,
       "+"
     )
-
     .replace(
       /\s+/g,
       ""
@@ -296,7 +282,6 @@ function decryptResponse(input) {
       decipher.update(
         cipherBytes
       ),
-
       decipher.final()
     ]);
 
@@ -311,7 +296,7 @@ function decryptResponse(input) {
 async function requestJson(
   url,
   options = {},
-  timeoutMs = 10000
+  timeoutMs = 8000
 ) {
   const response =
     await request(
@@ -323,10 +308,6 @@ async function requestJson(
   let text =
     await response.text();
 
-  /*
-   * Kalau endpoint tiba-tiba
-   * pulangkan JSON biasa.
-   */
   try {
     const parsed =
       JSON.parse(text);
@@ -392,7 +373,7 @@ async function requestJson(
 async function requestText(
   url,
   options = {},
-  timeoutMs = 10000
+  timeoutMs = 8000
 ) {
   const response =
     await request(
@@ -410,24 +391,19 @@ function normalise(value) {
     value || ""
   )
     .toLowerCase()
-
     .replace(
       /\bseason\s*\d+\b/g,
       " "
     )
-
     .replace(
       /\b(19|20)\d{2}\b/g,
       " "
     )
-
     .replace(
       /[^a-z0-9]+/g,
       " "
     )
-
     .trim()
-
     .replace(
       /\s+/g,
       " "
@@ -513,13 +489,14 @@ function scoreCandidate(
     score += 60;
   }
 
-
   const wantedYear =
     getYear(ctx);
 
   const foundYear =
     extractYear(
       item?.year ||
+      item?.releaseYear ||
+      item?.id ||
       item?.title
     );
 
@@ -528,12 +505,10 @@ function scoreCandidate(
     foundYear
   ) {
     score +=
-      wantedYear ===
-        foundYear
-        ? 30
-        : -15;
+      wantedYear === foundYear
+        ? 60
+        : -80;
   }
-
 
   const otherTitles =
     Array.isArray(
@@ -570,24 +545,20 @@ async function searchTitle(ctx) {
     );
   }
 
-
   const queries = [
     title
   ];
-
 
   if (
     ctx.originalTitle &&
     normalise(
       ctx.originalTitle
-    ) !==
-      normalise(title)
+    ) !== normalise(title)
   ) {
     queries.push(
       ctx.originalTitle
     );
   }
-
 
   if (
     ctx.type ===
@@ -600,7 +571,6 @@ async function searchTitle(ctx) {
       `${title} Season ${ctx.season}`
     );
   }
-
 
   const results =
     await Promise.allSettled(
@@ -621,7 +591,9 @@ async function searchTitle(ctx) {
 
           const data =
             await requestJson(
-              url
+              url,
+              {},
+              6000
             );
 
           const rows =
@@ -640,11 +612,9 @@ async function searchTitle(ctx) {
       )
     );
 
-
   const candidates = [];
   const seen =
     new Set();
-
 
   for (
     const result
@@ -662,7 +632,6 @@ async function searchTitle(ctx) {
 
       continue;
     }
-
 
     for (
       const item
@@ -687,7 +656,6 @@ async function searchTitle(ctx) {
     }
   }
 
-
   candidates.sort(
     (a, b) =>
       scoreCandidate(
@@ -699,7 +667,6 @@ async function searchTitle(ctx) {
         ctx
       )
   );
-
 
   return candidates;
 }
@@ -717,7 +684,9 @@ async function getDetail(id) {
 
   const data =
     await requestJson(
-      url
+      url,
+      {},
+      6000
     );
 
   return (
@@ -738,13 +707,11 @@ function chooseEpisode(
       ? detail.episodes
       : [];
 
-
   if (
     !episodes.length
   ) {
     return null;
   }
-
 
   if (
     ctx.type ===
@@ -756,13 +723,11 @@ function chooseEpisode(
     );
   }
 
-
   const wanted =
     Number(
       ctx.episode ||
       1
     );
-
 
   const exact =
     episodes.find(
@@ -772,11 +737,9 @@ function chooseEpisode(
         ) === wanted
     );
 
-
   if (exact) {
     return exact;
   }
-
 
   return (
     episodes[
@@ -784,6 +747,61 @@ function chooseEpisode(
     ] ||
     null
   );
+}
+
+
+function episodeIdentifiers(
+  detail,
+  episode
+) {
+  const values = [
+    episode?.identifier,
+    episode?.id,
+    detail?.episodes?.[0]?.identifier,
+    detail?.episodes?.[0]?.id,
+    detail?.identifier,
+    detail?.id
+  ];
+
+  return [
+    ...new Set(
+      values
+        .filter(Boolean)
+        .map(
+          value =>
+            String(value)
+        )
+    )
+  ];
+}
+
+
+function episodeParams(
+  episode,
+  ctx
+) {
+  const values = [
+    episode?.playId,
+    episode?.episode,
+    ctx.episode,
+    1
+  ];
+
+  return [
+    ...new Set(
+      values
+        .filter(
+          value =>
+            value !== null &&
+            value !== undefined &&
+            String(value).trim()
+        )
+        .map(
+          value =>
+            String(value)
+        )
+    )
+  ];
 }
 
 
@@ -799,7 +817,6 @@ async function resolveEpisode(ctx) {
           ctx
         );
 
-
       if (
         !candidates.length
       ) {
@@ -808,17 +825,12 @@ async function resolveEpisode(ctx) {
         );
       }
 
-
-      /*
-       * Detail candidates dibuat parallel
-       * untuk kurangkan loading time.
-       */
       const detailResults =
         await Promise.allSettled(
           candidates
             .slice(
               0,
-              5
+              3
             )
             .map(
               async candidate => {
@@ -836,56 +848,55 @@ async function resolveEpisode(ctx) {
                     {
                       ...candidate,
 
+                      id:
+                        detail.id ||
+                        candidate.id,
+
                       title:
                         detail.title ||
                         candidate.title,
 
                       year:
                         detail.year ||
+                        detail.releaseYear ||
                         candidate.year,
 
                       otherTitles:
                         detail.otherTitles ||
                         candidate.otherTitles
                     },
-
                     ctx
                   );
 
                 return {
                   score,
-                  detail
+                  detail,
+                  candidate
                 };
               }
             )
         );
 
-
       const valid =
         detailResults
-
           .filter(
             result =>
               result.status ===
                 "fulfilled" &&
               result.value
           )
-
           .map(
             result =>
               result.value
           )
-
           .sort(
             (a, b) =>
               b.score -
               a.score
           );
 
-
       const best =
         valid[0];
-
 
       if (
         !best?.detail
@@ -895,17 +906,14 @@ async function resolveEpisode(ctx) {
         );
       }
 
-
       const detail =
         best.detail;
-
 
       const episode =
         chooseEpisode(
           detail,
           ctx
         );
-
 
       if (!episode) {
         throw new Error(
@@ -915,34 +923,25 @@ async function resolveEpisode(ctx) {
         );
       }
 
-
-      const identifier =
-        detail
-          .episodes?.[0]
-          ?.identifier;
-
-
-      const episodeId =
-        identifier ||
-        detail.id;
-
-
-      const episodeParam =
-        episode.playId ||
-        String(
-          ctx.episode ||
-          1
+      const identifiers =
+        episodeIdentifiers(
+          detail,
+          episode
         );
 
+      const params =
+        episodeParams(
+          episode,
+          ctx
+        );
 
       console.log(
         `[onetouchtv match] ` +
-        `id=${detail.id} ` +
-        `episodeId=${episodeId} ` +
+        `id=${detail.id || best.candidate?.id} ` +
         `ep=${episode.episode} ` +
-        `playId=${episodeParam}`
+        `identifiers=${identifiers.join(",")} ` +
+        `params=${params.join(",")}`
       );
-
 
       return {
         title:
@@ -950,30 +949,153 @@ async function resolveEpisode(ctx) {
           getTitle(ctx),
 
         providerId:
-          detail.id,
-
-        episodeId:
           String(
-            episodeId
+            detail.id ||
+            best.candidate?.id ||
+            ""
           ),
 
-        episodeParam:
-          String(
-            episodeParam
-          )
+        identifiers,
+        params
       };
     }
   );
 }
 
 
-async function getEpisode(
-  episodeId,
+function usefulEpisode(result) {
+  if (
+    !result ||
+    typeof result !==
+      "object"
+  ) {
+    return false;
+  }
+
+  const sources =
+    Array.isArray(
+      result.sources
+    )
+      ? result.sources
+      : [];
+
+  const tracks =
+    Array.isArray(
+      result.track
+    )
+      ? result.track
+      : [];
+
+  return (
+    sources.length > 0 ||
+    tracks.length > 0
+  );
+}
+
+
+async function tryEpisode(
+  identifier,
   episodeParam
 ) {
-  const key =
-    `${episodeId}:${episodeParam}`;
+  const url =
+    `${BASE}/vod/` +
+    `${encodeURIComponent(identifier)}` +
+    `/episode/` +
+    `${encodeURIComponent(episodeParam)}`;
 
+  console.log(
+    `[onetouchtv episode try] ` +
+    `${identifier}/${episodeParam}`
+  );
+
+  const data =
+    await requestJson(
+      url,
+      {},
+      5000
+    );
+
+  const result =
+    data?.result ||
+    null;
+
+  if (
+    !usefulEpisode(
+      result
+    )
+  ) {
+    throw new Error(
+      `No sources/tracks for ${identifier}/${episodeParam}`
+    );
+  }
+
+  return {
+    identifier,
+    episodeParam,
+    result
+  };
+}
+
+
+async function firstSuccessful(
+  tasks
+) {
+  return new Promise(
+    (resolve, reject) => {
+      if (!tasks.length) {
+        reject(
+          new Error(
+            "No OneTouchTV episode candidates"
+          )
+        );
+        return;
+      }
+
+      let pending =
+        tasks.length;
+
+      const errors = [];
+
+      tasks.forEach(
+        task => {
+          Promise
+            .resolve()
+            .then(task)
+            .then(resolve)
+            .catch(
+              error => {
+                errors.push(
+                  error
+                );
+
+                pending--;
+
+                if (
+                  pending === 0
+                ) {
+                  reject(
+                    errors[0] ||
+                    new Error(
+                      "All OneTouchTV episode attempts failed"
+                    )
+                  );
+                }
+              }
+            );
+        }
+      );
+    }
+  );
+}
+
+
+async function getEpisode(
+  resolved
+) {
+  const key =
+    `${resolved.providerId}:` +
+    `${resolved.identifiers.join(",")}:` +
+    `${resolved.params.join(",")}`;
 
   return memo(
     episodeCache,
@@ -981,31 +1103,57 @@ async function getEpisode(
     EPISODE_TTL,
 
     async () => {
-      const url =
-        `${BASE}/vod/` +
-        `${encodeURIComponent(episodeId)}` +
-        `/episode/` +
-        `${encodeURIComponent(episodeParam)}`;
+      const pairs = [];
 
+      for (
+        const identifier
+        of resolved.identifiers
+      ) {
+        for (
+          const episodeParam
+          of resolved.params
+        ) {
+          pairs.push({
+            identifier,
+            episodeParam
+          });
+        }
+      }
 
-      console.log(
-        `[onetouchtv episode] ` +
-        `${episodeId}/${episodeParam}`
-      );
-
-
-      const data =
-        await requestJson(
-          url,
-          {},
-          15000
+      const uniquePairs =
+        [
+          ...new Map(
+            pairs.map(
+              item => [
+                `${item.identifier}:${item.episodeParam}`,
+                item
+              ]
+            )
+          ).values()
+        ]
+        .slice(
+          0,
+          8
         );
 
+      const winner =
+        await firstSuccessful(
+          uniquePairs.map(
+            item =>
+              () =>
+                tryEpisode(
+                  item.identifier,
+                  item.episodeParam
+                )
+          )
+        );
 
-      return (
-        data?.result ||
-        null
+      console.log(
+        `[onetouchtv episode OK] ` +
+        `${winner.identifier}/${winner.episodeParam}`
       );
+
+      return winner.result;
     }
   );
 }
@@ -1035,30 +1183,22 @@ async function getFinalPlaylist(url) {
     return url;
   }
 
-
   let playlistUrl =
     url;
 
-
-  const maxAttempts =
-    2;
-
-
   for (
     let attempt = 0;
-    attempt <
-      maxAttempts;
+    attempt < 2;
     attempt++
   ) {
     let playlist;
-
 
     try {
       playlist =
         await requestText(
           playlistUrl,
           {},
-          10000
+          5000
         );
 
     } catch (error) {
@@ -1070,7 +1210,6 @@ async function getFinalPlaylist(url) {
       break;
     }
 
-
     if (
       !playlist ||
       !playlist.includes(
@@ -1080,21 +1219,16 @@ async function getFinalPlaylist(url) {
       break;
     }
 
-
     const lines =
       playlist
-        .split(
-          /\r?\n/
-        )
+        .split(/\r?\n/)
         .map(
           line =>
             line.trim()
         );
 
-
     let lastStreamUrl =
       null;
-
 
     for (
       let i =
@@ -1113,11 +1247,9 @@ async function getFinalPlaylist(url) {
       ) {
         lastStreamUrl =
           line;
-
         break;
       }
     }
-
 
     if (
       !lastStreamUrl
@@ -1125,18 +1257,15 @@ async function getFinalPlaylist(url) {
       break;
     }
 
-
     const resolved =
       absoluteUrl(
         lastStreamUrl,
         playlistUrl
       );
 
-
     if (!resolved) {
       break;
     }
-
 
     console.log(
       "[onetouchtv playlist redirect]",
@@ -1146,11 +1275,9 @@ async function getFinalPlaylist(url) {
       )
     );
 
-
     playlistUrl =
       resolved;
   }
-
 
   return playlistUrl;
 }
@@ -1167,12 +1294,10 @@ function streamObject(
       ""
     ).trim();
 
-
   const name =
     quality
       ? `OneTouchTV • ${quality}`
       : `OneTouchTV • Server ${index + 1}`;
-
 
   return {
     name,
@@ -1214,13 +1339,10 @@ async function resolveStreams(ctx) {
       ctx
     );
 
-
   const episode =
     await getEpisode(
-      resolved.episodeId,
-      resolved.episodeParam
+      resolved
     );
-
 
   const sources =
     Array.isArray(
@@ -1229,11 +1351,9 @@ async function resolveStreams(ctx) {
       ? episode.sources
       : [];
 
-
   console.log(
     `[onetouchtv sources] ${sources.length}`
   );
-
 
   const results =
     await Promise.allSettled(
@@ -1248,199 +1368,13 @@ async function resolveStreams(ctx) {
             return null;
           }
 
-
           const url =
             await getFinalPlaylist(
               source.url
             );
 
-
           if (!url) {
             return null;
           }
 
-
-          return streamObject(
-            source,
-            url,
-            index
-          );
-        }
-      )
-    );
-
-
-  const streams =
-    results
-
-      .filter(
-        result =>
-          result.status ===
-            "fulfilled" &&
-          result.value
-      )
-
-      .map(
-        result =>
-          result.value
-      );
-
-
-  const seen =
-    new Set();
-
-
-  return streams.filter(
-    stream => {
-      if (
-        !stream?.url ||
-        seen.has(
-          stream.url
-        )
-      ) {
-        return false;
-      }
-
-
-      seen.add(
-        stream.url
-      );
-
-
-      return true;
-    }
-  );
-}
-
-
-function subtitleLanguage(item) {
-  return String(
-    item?.name ||
-    item?.label ||
-    "Unknown"
-  ).trim();
-}
-
-
-async function resolveSubtitles(ctx) {
-  const resolved =
-    await resolveEpisode(
-      ctx
-    );
-
-
-  /*
-   * getEpisode share cache yang sama
-   * dengan resolveStreams().
-   */
-  const episode =
-    await getEpisode(
-      resolved.episodeId,
-      resolved.episodeParam
-    );
-
-
-  const tracks =
-    Array.isArray(
-      episode?.track
-    )
-      ? episode.track
-      : [];
-
-
-  console.log(
-    `[onetouchtv subtitles] ${tracks.length}`
-  );
-
-
-  return tracks
-
-    .map(
-      (
-        item,
-        index
-      ) => ({
-        id:
-          `onetouchtv-` +
-          `${resolved.providerId}-` +
-          `${ctx.episode || 1}-` +
-          `${index}`,
-
-        lang:
-          subtitleLanguage(
-            item
-          ),
-
-        url:
-          item?.file
-      })
-    )
-
-    .filter(
-      item =>
-        typeof item.url ===
-          "string" &&
-        /^https?:\/\//i.test(
-          item.url
-        )
-    );
-}
-
-
-async function getStreams(ctx) {
-  try {
-    return await memo(
-      streamCache,
-      cacheKey(ctx),
-      STREAM_TTL,
-
-      () =>
-        resolveStreams(
-          ctx
-        )
-    );
-
-  } catch (error) {
-    console.error(
-      "[onetouchtv streams]",
-      error?.message ||
-      error
-    );
-
-    return [];
-  }
-}
-
-
-async function getSubtitles(ctx) {
-  try {
-    return await memo(
-      subtitleCache,
-      cacheKey(ctx),
-      SUBTITLE_TTL,
-
-      () =>
-        resolveSubtitles(
-          ctx
-        )
-    );
-
-  } catch (error) {
-    console.error(
-      "[onetouchtv subtitles]",
-      error?.message ||
-      error
-    );
-
-    return [];
-  }
-}
-
-
-module.exports = {
-  name:
-    "OneTouchTV",
-
-  getStreams,
-  getSubtitles
-};
+          return s
