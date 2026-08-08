@@ -620,21 +620,61 @@ async function resolveMovie(ctx) {
     );
   }
 
-  const searchJson =
+  let searchJson =
+  await fetchJson(
+    searchUrl,
+    {
+      method: "POST",
+
+      headers: {
+        "Content-Type": "application/json",
+        "X-Client-Info": JSON.stringify({
+          timezone: "Asia/Kuala_Lumpur"
+        })
+      },
+
+      body:
+        JSON.stringify(body)
+    }
+  );
+
+let firstItems =
+  Array.isArray(searchJson?.data?.items)
+    ? searchJson.data.items
+    : [];
+
+/*
+ * Compatibility retry.
+ * Some MovieBox API versions return zero items
+ * when older providers send perPage = 0.
+ */
+if (
+  firstItems.length === 0 &&
+  String(body.perPage) === "0"
+) {
+  const retryBody = {
+    ...body,
+    perPage: "24"
+  };
+
+  searchJson =
     await fetchJson(
       searchUrl,
       {
         method: "POST",
 
         headers: {
-          "Content-Type":
-            "application/json"
+          "Content-Type": "application/json",
+          "X-Client-Info": JSON.stringify({
+            timezone: "Asia/Kuala_Lumpur"
+          })
         },
 
         body:
-          JSON.stringify(body)
+          JSON.stringify(retryBody)
       }
     );
+}
 
   const results =
   Array.isArray(searchJson?.data?.items)
