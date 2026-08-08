@@ -950,20 +950,14 @@ async function getStreams(ctx) {
       );
 
   } catch (error) {
-    console.error(
-      "[P12 generic-direct]",
-      error
-    );
+  console.error(
+    "[P12 generic-direct]",
+    error
+  );
 
-    return [];
+  return [{
+    name: "P12 DEBUG",
+    title: String(error?.message || error),
+    url: "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4"
+  }];
   }
-}
-
-async function getSubtitles() {
-  return [];
-}
-
-module.exports = {
-  getStreams,
-  getSubtitles
-};
