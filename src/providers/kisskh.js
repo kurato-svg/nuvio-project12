@@ -1,25 +1,28 @@
 const BASES = [
   "https://kisskh.co",
-  "https://kisskh.id"
+  "https://kisskh.do"
 ];
-
-const VIDEO_KEY_API =
-  "https://script.google.com/macros/s/AKfycbzn8B31PuDxzaMa9_CQ0VGEDasFqfzI5bXvjaIZH4DM8DNq9q6xj1ALvZNz_JT3jF0suA/exec?id=";
-
-const SUB_KEY_API =
-  "https://script.google.com/macros/s/AKfycbyq6hTj0ZhlinYC6xbggtgo166tp6XaDKBCGtnYk8uOfYBUFwwxBui0sGXiu_zIFmA/exec?id=";
 
 const USER_AGENT =
   "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0 Mobile Safari/537.36";
 
+const VIDEO_GUID =
+  "62f176f3bb1b5b8e70e39932ad34a0c7";
+
+const SUB_GUID =
+  "VgV52sWhwvBSf8BsM3BRY9weWiiCbtGp";
+
 const LOOKUP_TTL =
-  6 * 60 * 60 * 1000;
+  4 * 60 * 60 * 1000;
 
 const STREAM_TTL =
-  2 * 60 * 1000;
+  60 * 60 * 1000;
 
 const SUBTITLE_TTL =
-  10 * 60 * 1000;
+  60 * 60 * 1000;
+
+const REQUEST_TIMEOUT_MS =
+  10000;
 
 const lookupCache =
   new Map();
@@ -30,13 +33,10 @@ const streamCache =
 const subtitleCache =
   new Map();
 
-const sessionCookies =
+const tokenFunctionCache =
   new Map();
 
-const warmedBases =
-  new Set();
-
-const warmingBases =
+const baseMetrics =
   new Map();
 
 
@@ -56,15 +56,12 @@ async function memo(
   ttl,
   loader
 ) {
-  const now =
-    Date.now();
-
   const hit =
     cache.get(key);
 
   if (
     hit &&
-    hit.expires > now
+    hit.expires > Date.now()
   ) {
     return hit.value;
   }
@@ -78,7 +75,7 @@ async function memo(
     key,
     {
       expires:
-        now + ttl,
+        Date.now() + ttl,
 
       value
     }
@@ -94,393 +91,189 @@ async function memo(
 }
 
 
-function getBaseFromUrl(url) {
-  try {
-    const host =
-      new URL(url).host;
-
-    return (
-      BASES.find(
-        base =>
-          new URL(base).host ===
-          host
-      ) ||
-      null
-    );
-
-  } catch {
-    return null;
-  }
-}
-
-
-function mergeCookies(
-  current,
-  incoming
-) {
-  const jar =
-    new Map();
-
-  for (
-    const raw
-    of [
-      current,
-      incoming
-    ]
-  ) {
-    if (!raw) {
-      continue;
-    }
-
-    for (
-      const part
-      of raw.split(";")
-    ) {
-      const item =
-        part.trim();
-
-      const index =
-        item.indexOf("=");
-
-      if (
-        index <= 0
-      ) {
-        continue;
-      }
-
-      const name =
-        item
-          .slice(
-            0,
-            index
-          )
-          .trim();
-
-      const value =
-        item
-          .slice(
-            index + 1
-          )
-          .trim();
-
-      jar.set(
-        name,
-        value
-      );
-    }
-  }
-
-  return [
-    ...jar.entries()
-  ]
-    .map(
-      ([name, value]) =>
-        `${name}=${value}`
-    )
-    .join("; ");
-}
-
-
-function saveCookies(
-  base,
-  response
-) {
+function metric(base) {
   if (
-    !base ||
-    !response?.headers
+    !baseMetrics.has(base)
   ) {
-    return;
-  }
-
-  let cookies = [];
-
-  if (
-    typeof response.headers
-      .getSetCookie ===
-    "function"
-  ) {
-    cookies =
-      response.headers
-        .getSetCookie();
-
-  } else {
-    const cookie =
-      response.headers.get(
-        "set-cookie"
-      );
-
-    if (cookie) {
-      cookies = [
-        cookie
-      ];
-    }
-  }
-
-  for (
-    const value
-    of cookies
-  ) {
-    const pair =
-      String(value)
-        .split(";")[0]
-        .trim();
-
-    if (!pair) {
-      continue;
-    }
-
-    sessionCookies.set(
+    baseMetrics.set(
       base,
-      mergeCookies(
-        sessionCookies.get(
-          base
-        ) || "",
-        pair
-      )
-    );
-  }
-}
-
-
-async function warmBase(base) {
-  if (
-    warmedBases.has(base)
-  ) {
-    return;
-  }
-
-  if (
-    warmingBases.has(base)
-  ) {
-    return warmingBases.get(
-      base
-    );
-  }
-
-  const task =
-    (async () => {
-      const controller =
-        new AbortController();
-
-      const timer =
-        setTimeout(
-          () =>
-            controller.abort(),
-          7000
-        );
-
-      try {
-        const response =
-          await fetch(
-            `${base}/`,
-            {
-              signal:
-                controller.signal,
-
-              redirect:
-                "follow",
-
-              headers: {
-                Accept:
-                  "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-
-                "Accept-Language":
-                  "en-US,en;q=0.9",
-
-                "Cache-Control":
-                  "no-cache",
-
-                Pragma:
-                  "no-cache",
-
-                "Upgrade-Insecure-Requests":
-                  "1",
-
-                "User-Agent":
-                  USER_AGENT
-              }
-            }
-          );
-
-        saveCookies(
-          base,
-          response
-        );
-
-        console.log(
-          `[kisskh warm] ${base} HTTP ${response.status}`
-        );
-
-      } catch (error) {
-        console.warn(
-          `[kisskh warm failed] ${base}`,
-          error?.message ||
-          error
-        );
-
-      } finally {
-        clearTimeout(
-          timer
-        );
-
-        warmedBases.add(
-          base
-        );
-
-        warmingBases.delete(
-          base
-        );
+      {
+        success: 0,
+        fail: 0,
+        lastUsed: 0
       }
-    })();
+    );
+  }
 
-  warmingBases.set(
-    base,
-    task
-  );
-
-  return task;
+  return baseMetrics.get(base);
 }
 
 
-async function requestText(
+function markSuccess(base) {
+  const m =
+    metric(base);
+
+  m.success++;
+  m.lastUsed =
+    Date.now();
+}
+
+
+function markFail(base) {
+  const m =
+    metric(base);
+
+  m.fail++;
+  m.lastUsed =
+    Date.now();
+}
+
+
+function orderedBases() {
+  return [
+    ...BASES
+  ].sort(
+    (a, b) => {
+      const am =
+        metric(a);
+
+      const bm =
+        metric(b);
+
+      const aScore =
+        (am.success + 1) /
+        (am.fail + 1);
+
+      const bScore =
+        (bm.success + 1) /
+        (bm.fail + 1);
+
+      return (
+        bScore -
+        aScore
+      );
+    }
+  );
+}
+
+
+async function request(
   url,
   options = {},
-  timeoutMs = 7000,
-  allowRetry = true
+  timeoutMs =
+    REQUEST_TIMEOUT_MS
 ) {
-  const base =
-    getBaseFromUrl(
-      url
+  const controller =
+    new AbortController();
+
+  const timer =
+    setTimeout(
+      () =>
+        controller.abort(),
+
+      timeoutMs
     );
 
-  const doRequest =
-    async () => {
-      const controller =
-        new AbortController();
+  try {
+    const response =
+      await fetch(
+        url,
+        {
+          ...options,
 
-      const timer =
-        setTimeout(
-          () =>
-            controller.abort(),
-          timeoutMs
+          signal:
+            controller.signal,
+
+          redirect:
+            "follow",
+
+          headers: {
+            "User-Agent":
+              USER_AGENT,
+
+            Accept:
+              "application/json",
+
+            "Accept-Language":
+              "en-US,en;q=0.5",
+
+            ...(options.headers || {})
+          }
+        }
+      );
+
+    if (!response.ok) {
+      const error =
+        new Error(
+          `HTTP ${response.status}: ${url}`
         );
 
-      try {
-        const cookie =
-          base
-            ? sessionCookies.get(
-                base
-              )
-            : null;
+      error.status =
+        response.status;
 
-        const response =
-          await fetch(
-            url,
-            {
-              ...options,
+      throw error;
+    }
 
-              signal:
-                controller.signal,
+    return response;
 
-              redirect:
-                "follow",
-
-              headers: {
-                Accept:
-                  "*/*",
-
-                "Accept-Language":
-                  "en-US,en;q=0.9",
-
-                "Cache-Control":
-                  "no-cache",
-
-                Pragma:
-                  "no-cache",
-
-                "User-Agent":
-                  USER_AGENT,
-
-                ...(cookie
-                  ? {
-                      Cookie:
-                        cookie
-                    }
-                  : {}),
-
-                ...(options.headers || {})
-              }
-            }
-          );
-
-        saveCookies(
-          base,
-          response
-        );
-
-        return response;
-
-      } finally {
-        clearTimeout(
-          timer
-        );
-      }
-    };
-
-  let response =
-    await doRequest();
-
-  if (
-    response.status === 403 &&
-    base &&
-    allowRetry
-  ) {
-    console.warn(
-      `[kisskh 403] warm and retry ${base}`
-    );
-
-    warmedBases.delete(
-      base
-    );
-
-    await warmBase(
-      base
-    );
-
-    response =
-      await doRequest();
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      `HTTP ${response.status}: ${url}`
+  } finally {
+    clearTimeout(
+      timer
     );
   }
-
-  return response.text();
 }
 
 
 async function requestJson(
   url,
   options = {},
-  timeoutMs = 7000
+  timeoutMs
 ) {
-  const text =
-    await requestText(
+  const response =
+    await request(
       url,
       options,
       timeoutMs
     );
 
+  const text =
+    await response.text();
+
   try {
-    return JSON.parse(text);
+    return JSON.parse(
+      text
+    );
 
   } catch {
     throw new Error(
       `Invalid JSON: ${url}`
     );
   }
+}
+
+
+async function requestText(
+  url,
+  options = {},
+  timeoutMs
+) {
+  const response =
+    await request(
+      url,
+      {
+        ...options,
+
+        headers: {
+          Accept:
+            "text/html,*/*",
+
+          ...(options.headers || {})
+        }
+      },
+      timeoutMs
+    );
+
+  return response.text();
 }
 
 
@@ -509,24 +302,12 @@ function normalise(value) {
 }
 
 
-function slug(value) {
+function getTitle(ctx) {
   return String(
-    value || ""
-  )
-    .replace(
-      /[^a-zA-Z0-9]/g,
-      "-"
-    )
-
-    .replace(
-      /-+/g,
-      "-"
-    )
-
-    .replace(
-      /^-|-$/g,
-      ""
-    );
+    ctx?.title ||
+    ctx?.originalTitle ||
+    ""
+  ).trim();
 }
 
 
@@ -544,138 +325,7 @@ function getYear(ctx) {
 }
 
 
-function getTitle(ctx) {
-  return String(
-    ctx?.title ||
-    ctx?.originalTitle ||
-    ""
-  ).trim();
-}
-
-
-function searchQueries(ctx) {
-  const title =
-    getTitle(ctx);
-
-  if (!title) {
-    return [];
-  }
-
-  const queries = [
-    title
-  ];
-
-  if (
-    ctx.type ===
-      "series" &&
-    Number(
-      ctx.season
-    ) > 1
-  ) {
-    queries.unshift(
-      `${title} Season ${ctx.season}`
-    );
-  }
-
-  return [
-    ...new Set(
-      queries
-    )
-  ];
-}
-
-
-async function searchBase(
-  base,
-  query
-) {
-  const url =
-    `${base}/api/DramaList/Search` +
-    `?q=${encodeURIComponent(query)}` +
-    `&type=0`;
-
-  const json =
-    await requestJson(
-      url,
-      {
-        headers: {
-          Accept:
-            "application/json, text/plain, */*",
-
-          Referer:
-            `${base}/`,
-
-          Origin:
-            base,
-
-          "X-Requested-With":
-            "XMLHttpRequest"
-        }
-      }
-    );
-
-  const items =
-    Array.isArray(
-      json
-    )
-      ? json
-      : [];
-
-  console.log(
-    `[kisskh search] ${base} | ${query} | ${items.length}`
-  );
-
-  return items.map(
-    item => ({
-      ...item,
-
-      _base:
-        base
-    })
-  );
-}
-
-
-async function searchAll(query) {
-  const results =
-    await Promise.allSettled(
-      BASES.map(
-        base =>
-          searchBase(
-            base,
-            query
-          )
-      )
-    );
-
-  const output = [];
-
-  for (
-    const result
-    of results
-  ) {
-    if (
-      result.status ===
-      "fulfilled"
-    ) {
-      output.push(
-        ...result.value
-      );
-
-    } else {
-      console.warn(
-        "[kisskh search base failed]",
-        result.reason?.message ||
-        result.reason
-      );
-    }
-  }
-
-  return output;
-}
-
-
-function searchScore(
+function candidateScore(
   item,
   ctx
 ) {
@@ -699,19 +349,9 @@ function searchScore(
   let score = 0;
 
   if (
-    found === wanted
+    wanted === found
   ) {
     score += 100;
-
-  } else if (
-    found.startsWith(
-      wanted
-    ) ||
-    wanted.startsWith(
-      found
-    )
-  ) {
-    score += 70;
 
   } else if (
     found.includes(
@@ -721,8 +361,99 @@ function searchScore(
       found
     )
   ) {
-    score += 50;
+    score += 60;
   }
+
+  if (
+    ctx.type ===
+    "series"
+  ) {
+    const count =
+      Number(
+        item?.episodesCount ||
+        0
+      );
+
+    if (
+      count > 1
+    ) {
+      score += 15;
+    }
+  }
+
+  if (
+    ctx.type ===
+    "movie"
+  ) {
+    const count =
+      Number(
+        item?.episodesCount ||
+        0
+      );
+
+    if (
+      count === 1
+    ) {
+      score += 15;
+    }
+  }
+
+  return score;
+}
+
+
+async function searchOnBase(
+  base,
+  title
+) {
+  const url =
+    `${base}/api/DramaList/Search` +
+    `?q=${encodeURIComponent(title)}` +
+    `&type=0`;
+
+  const data =
+    await requestJson(
+      url
+    );
+
+  const items =
+    Array.isArray(
+      data
+    )
+      ? data
+      : [];
+
+  console.log(
+    `[kisskh search] ` +
+    `${base} | ` +
+    `${title} | ` +
+    `${items.length}`
+  );
+
+  return items.map(
+    item => ({
+      ...item,
+
+      _base:
+        base
+    })
+  );
+}
+
+
+async function searchContent(ctx) {
+  const title =
+    getTitle(ctx);
+
+  if (!title) {
+    throw new Error(
+      "KissKH title missing"
+    );
+  }
+
+  const queries = [
+    title
+  ];
 
   if (
     ctx.type ===
@@ -731,159 +462,103 @@ function searchScore(
       ctx.season
     ) > 1
   ) {
-    const raw =
-      String(
-        item?.title || ""
-      )
-        .toLowerCase();
-
-    if (
-      raw.includes(
-        `season ${ctx.season}`
-      )
-    ) {
-      score += 40;
-    }
+    queries.unshift(
+      `${title} Season ${ctx.season}`
+    );
   }
 
-  return score;
-}
-
-
-async function loadDetail(item) {
-  const base =
-    item?._base;
-
-  if (
-    !base ||
-    !item?.id
-  ) {
-    return null;
-  }
-
-  const title =
-    item.title ||
-    "Drama";
-
-  const url =
-    `${base}/api/DramaList/Drama/` +
-    `${item.id}?isq=false`;
-
-  const detail =
-    await requestJson(
-      url,
-      {
-        headers: {
-          Accept:
-            "application/json, text/plain, */*",
-
-          Referer:
-            `${base}/Drama/` +
-            `${slug(title)}` +
-            `?id=${item.id}`,
-
-          Origin:
-            base,
-
-          "X-Requested-With":
-            "XMLHttpRequest"
-        }
-      }
-    );
-
-  return {
-    ...detail,
-
-    _base:
-      base
-  };
-}
-
-
-function detailScore(
-  detail,
-  ctx
-) {
-  if (!detail) {
-    return -1;
-  }
-
-  const wanted =
-    normalise(
-      getTitle(ctx)
-    );
-
-  const found =
-    normalise(
-      detail.title
-    );
-
-  const wantedYear =
-    getYear(ctx);
-
-  const foundYear =
-    Number(
-      String(
-        detail.releaseDate || ""
-      ).slice(
-        0,
-        4
-      )
-    ) ||
+  let lastError =
     null;
 
-  let score = 0;
-
-  if (
-    wanted &&
-    found
+  for (
+    const base
+    of orderedBases()
   ) {
-    if (
-      wanted === found
-    ) {
-      score += 100;
+    try {
+      const settled =
+        await Promise.allSettled(
+          [
+            ...new Set(
+              queries
+            )
+          ].map(
+            query =>
+              searchOnBase(
+                base,
+                query
+              )
+          )
+        );
 
-    } else if (
-      found.includes(
-        wanted
-      ) ||
-      wanted.includes(
-        found
-      )
-    ) {
-      score += 55;
+      const candidates =
+        settled
+
+          .filter(
+            result =>
+              result.status ===
+              "fulfilled"
+          )
+
+          .flatMap(
+            result =>
+              result.value
+          );
+
+      if (
+        !candidates.length
+      ) {
+        markFail(base);
+        continue;
+      }
+
+      candidates.sort(
+        (a, b) =>
+          candidateScore(
+            b,
+            ctx
+          ) -
+          candidateScore(
+            a,
+            ctx
+          )
+      );
+
+      markSuccess(base);
+
+      return candidates;
+
+    } catch (error) {
+      lastError =
+        error;
+
+      markFail(base);
+
+      console.warn(
+        `[kisskh base failed] ` +
+        `${base} | ` +
+        `${error.message}`
+      );
     }
   }
 
-  if (
-    wantedYear &&
-    foundYear
-  ) {
-    score +=
-      wantedYear === foundYear
-        ? 30
-        : -15;
+  if (lastError) {
+    throw lastError;
   }
 
-  if (
-    ctx.type ===
-      "series" &&
-    detail.type !==
-      "Movie"
-  ) {
-    score += 20;
-  }
+  return [];
+}
 
-  if (
-    ctx.type ===
-      "movie" &&
-    detail.type ===
-      "Movie"
-  ) {
-    score += 20;
-  }
 
-  return score;
+async function getDetail(
+  base,
+  id
+) {
+  const url =
+    `${base}/api/DramaList/Drama/${id}`;
+
+  return requestJson(
+    url
+  );
 }
 
 
@@ -911,14 +586,15 @@ function chooseEpisode(
 
   const wanted =
     Number(
-      ctx.episode
+      ctx.episode ||
+      1
     );
 
   const exact =
     episodes.find(
-      episode =>
+      ep =>
         Number(
-          episode?.number
+          ep?.number
         ) === wanted
     );
 
@@ -926,20 +602,15 @@ function chooseEpisode(
     return exact;
   }
 
-  const ordered =
-    [...episodes].sort(
-      (a, b) =>
-        Number(
-          a?.number || 0
-        ) -
-        Number(
-          b?.number || 0
-        )
+  const count =
+    Number(
+      detail?.episodesCount ||
+      episodes.length
     );
 
   return (
-    ordered[
-      wanted - 1
+    episodes[
+      count - wanted
     ] ||
     null
   );
@@ -947,72 +618,16 @@ function chooseEpisode(
 
 
 async function resolveEpisode(ctx) {
-  const key =
-    cacheKey(ctx);
-
   return memo(
     lookupCache,
-    key,
+    cacheKey(ctx),
     LOOKUP_TTL,
+
     async () => {
-      const queries =
-        searchQueries(ctx);
-
-      if (
-        !queries.length
-      ) {
-        throw new Error(
-          "Cinemeta title missing"
+      const candidates =
+        await searchContent(
+          ctx
         );
-      }
-
-      const searches =
-        await Promise.allSettled(
-          queries.map(
-            searchAll
-          )
-        );
-
-      const candidates = [];
-      const seen =
-        new Set();
-
-      for (
-        const result
-        of searches
-      ) {
-        if (
-          result.status !==
-          "fulfilled"
-        ) {
-          continue;
-        }
-
-        for (
-          const item
-          of result.value
-        ) {
-          const idKey =
-            `${item._base}:${item.id}`;
-
-          if (
-            !item?.id ||
-            seen.has(
-              idKey
-            )
-          ) {
-            continue;
-          }
-
-          seen.add(
-            idKey
-          );
-
-          candidates.push(
-            item
-          );
-        }
-      }
 
       if (
         !candidates.length
@@ -1022,61 +637,82 @@ async function resolveEpisode(ctx) {
         );
       }
 
-      candidates.sort(
-        (a, b) =>
-          searchScore(
-            b,
-            ctx
-          ) -
-          searchScore(
-            a,
-            ctx
-          )
-      );
+      const wantedYear =
+        getYear(ctx);
 
-      const detailResults =
-        await Promise.allSettled(
-          candidates
-            .slice(
-              0,
-              6
-            )
-            .map(
-              loadDetail
-            )
-        );
+      let best =
+        null;
 
-      const details =
-        detailResults
+      for (
+        const candidate
+        of candidates.slice(
+          0,
+          5
+        )
+      ) {
+        try {
+          const detail =
+            await getDetail(
+              candidate._base,
+              candidate.id
+            );
 
-          .filter(
-            result =>
-              result.status ===
-                "fulfilled" &&
-              result.value
-          )
-
-          .map(
-            result =>
-              result.value
-          )
-
-          .sort(
-            (a, b) =>
-              detailScore(
-                b,
-                ctx
-              ) -
-              detailScore(
-                a,
-                ctx
+          const year =
+            Number(
+              String(
+                detail?.releaseDate ||
+                ""
+              ).slice(
+                0,
+                4
               )
+            ) ||
+            null;
+
+          let score =
+            candidateScore(
+              candidate,
+              ctx
+            );
+
+          if (
+            wantedYear &&
+            year
+          ) {
+            score +=
+              wantedYear === year
+                ? 25
+                : -10;
+          }
+
+          if (
+            !best ||
+            score >
+              best.score
+          ) {
+            best = {
+              score,
+
+              base:
+                candidate._base,
+
+              detail
+            };
+          }
+
+        } catch (error) {
+          console.warn(
+            `[kisskh detail failed] ` +
+            `${candidate._base} ` +
+            `id=${candidate.id} | ` +
+            `${error.message}`
           );
+        }
+      }
 
-      const detail =
-        details[0];
-
-      if (!detail) {
+      if (
+        !best?.detail
+      ) {
         throw new Error(
           "KissKH detail lookup failed"
         );
@@ -1084,7 +720,7 @@ async function resolveEpisode(ctx) {
 
       const episode =
         chooseEpisode(
-          detail,
+          best.detail,
           ctx
         );
 
@@ -1092,32 +728,36 @@ async function resolveEpisode(ctx) {
         !episode?.id
       ) {
         throw new Error(
-          `KissKH episode not found: ` +
-          `${ctx.season || 0}x` +
-          `${ctx.episode || 0}`
+          `KissKH episode not found ` +
+          `${ctx.season || 1}x` +
+          `${ctx.episode || 1}`
         );
       }
 
+      markSuccess(
+        best.base
+      );
+
       console.log(
         `[kisskh match] ` +
-        `base=${detail._base} ` +
-        `id=${detail.id} ` +
+        `base=${best.base} ` +
+        `id=${best.detail.id} ` +
         `ep=${episode.number} ` +
         `epId=${episode.id}`
       );
 
       return {
         base:
-          detail._base,
+          best.base,
+
+        kisskhId:
+          best.detail.id,
 
         title:
-          detail.title ||
+          best.detail.title ||
           getTitle(ctx),
 
-        id:
-          detail.id,
-
-        eps:
+        episode:
           Number(
             episode.number
           ) ||
@@ -1126,117 +766,183 @@ async function resolveEpisode(ctx) {
           ) ||
           1,
 
-        epsId:
-          episode.id
+        episodeId:
+          String(
+            episode.id
+          )
       };
     }
   );
 }
 
 
-async function fetchKey(
-  endpoint,
-  epsId
+function findCommonScript(
+  html,
+  base
 ) {
-  const json =
-    await requestJson(
-      `${endpoint}` +
-      `${encodeURIComponent(epsId)}` +
-      `&version=2.8.10`,
-      {},
-      9000
+  const match =
+    String(
+      html
+    ).match(
+      /<script[^>]+src=["']([^"']*common[^"']*)["'][^>]*>/i
     );
 
   if (
-    !json?.key
+    !match?.[1]
   ) {
     throw new Error(
-      "KissKH key missing"
+      "KissKH common script not found"
     );
   }
 
-  return json.key;
+  return new URL(
+    match[1],
+    `${base}/`
+  ).toString();
 }
 
 
-function detectQuality(url) {
-  const match =
+async function getTokenFunction(
+  base
+) {
+  if (
+    tokenFunctionCache.has(
+      base
+    )
+  ) {
+    return tokenFunctionCache.get(
+      base
+    );
+  }
+
+  const html =
+    await requestText(
+      `${base}/index.html`
+    );
+
+  const scriptUrl =
+    findCommonScript(
+      html,
+      base
+    );
+
+  const jsCode =
+    await requestText(
+      scriptUrl
+    );
+
+  const getFunction =
+    new Function(
+      `${jsCode}; ` +
+      `return typeof _0x54b991 === "function" ` +
+      `? _0x54b991 : null;`
+    );
+
+  const tokenFunction =
+    getFunction();
+
+  if (
+    typeof tokenFunction !==
+    "function"
+  ) {
+    throw new Error(
+      "KissKH token function unavailable"
+    );
+  }
+
+  tokenFunctionCache.set(
+    base,
+    tokenFunction
+  );
+
+  return tokenFunction;
+}
+
+
+async function getToken(
+  base,
+  episodeId,
+  guid
+) {
+  const fn =
+    await getTokenFunction(
+      base
+    );
+
+  const token =
+    fn(
+      Number(
+        episodeId
+      ),
+
+      null,
+
+      "2.8.10",
+
+      guid,
+
+      4830201,
+
+      "kisskh",
+      "kisskh",
+      "kisskh",
+      "kisskh",
+      "kisskh",
+      "kisskh"
+    );
+
+  if (!token) {
+    throw new Error(
+      "KissKH token generation failed"
+    );
+  }
+
+  return String(
+    token
+  );
+}
+
+
+function fixUrl(
+  url,
+  base
+) {
+  const value =
     String(
       url || ""
-    ).match(
-      /(?:^|[^0-9])(2160|1440|1080|720|576|540|480|360|240)p?(?:[^0-9]|$)/i
+    ).trim();
+
+  if (!value) {
+    return null;
+  }
+
+  if (
+    value.startsWith(
+      "//"
+    )
+  ) {
+    return (
+      `https:${value}`
     );
+  }
 
-  return match
-    ? Number(
-        match[1]
-      )
-    : null;
-}
+  if (
+    /^https?:\/\//i.test(
+      value
+    )
+  ) {
+    return value;
+  }
 
+  try {
+    return new URL(
+      value,
+      `${base}/`
+    ).toString();
 
-function streamObject(
-  base,
-  url,
-  label = null
-) {
-  const quality =
-    detectQuality(
-      url
-    );
-
-  const display =
-    label ||
-    (
-      quality
-        ? `${quality}p`
-
-        : /\.m3u8(?:\?|$)/i.test(
-            url
-          )
-          ? "HLS"
-
-          : /\.mp4(?:\?|$)/i.test(
-              url
-            )
-            ? "MP4"
-
-            : "Stream"
-    );
-
-  return {
-    name:
-      `KissKH • ${display}`,
-
-    title:
-      `KissKH • ${display}`,
-
-    url,
-
-    ...(quality
-      ? {
-          quality
-        }
-      : {}),
-
-    behaviorHints: {
-      notWebReady:
-        true,
-
-      proxyHeaders: {
-        request: {
-          Referer:
-            `${base}/`,
-
-          Origin:
-            base,
-
-          "User-Agent":
-            USER_AGENT
-        }
-      }
-    }
-  };
+  } catch {
+    return null;
+  }
 }
 
 
@@ -1246,192 +952,189 @@ async function resolveStreams(ctx) {
       ctx
     );
 
-  const base =
-    episode.base;
-
-  const kkey =
-    await fetchKey(
-      VIDEO_KEY_API,
-      episode.epsId
+  const token =
+    await getToken(
+      episode.base,
+      episode.episodeId,
+      VIDEO_GUID
     );
 
-  const videoApi =
-    `${base}/api/DramaList/Episode/` +
-    `${episode.epsId}.png` +
-    `?err=false&ts=&time=` +
-    `&kkey=${encodeURIComponent(kkey)}`;
+  const url =
+    `${episode.base}` +
+    `/api/DramaList/Episode/` +
+    `${episode.episodeId}.png` +
+    `?kkey=${encodeURIComponent(token)}`;
 
-  const referer =
-    `${base}/Drama/` +
-    `${slug(episode.title)}/` +
-    `Episode-${episode.eps}` +
-    `?id=${episode.id}` +
-    `&ep=${episode.epsId}` +
-    `&page=0&pageSize=100`;
-
-  const source =
+  const data =
     await requestJson(
-      videoApi,
-      {
-        headers: {
-          Accept:
-            "application/json, text/plain, */*",
+      url,
+      {},
+      15000
+    );
 
-          Referer:
-            referer,
-
-          Origin:
-            base,
-
-          "X-Requested-With":
-            "XMLHttpRequest"
-        }
-      },
-      10000
+  const streamUrl =
+    fixUrl(
+      data?.Video,
+      episode.base
     );
 
   console.log(
-    "[kisskh source] Video=",
-    String(
-      source?.Video || ""
-    ).slice(
-      0,
-      180
-    )
+    `[kisskh stream] ` +
+    `${
+      streamUrl
+        ? streamUrl.slice(
+            0,
+            160
+          )
+        : "none"
+    }`
   );
 
-  console.log(
-    "[kisskh source] ThirdParty=",
-    String(
-      source?.ThirdParty || ""
-    ).slice(
-      0,
-      180
-    )
-  );
-
-  const output = [];
-
-  for (
-    const link
-    of [
-      source?.Video,
-      source?.ThirdParty
-    ]
-  ) {
-    if (
-      typeof link !==
-        "string" ||
-      !link.trim()
-    ) {
-      continue;
-    }
-
-    const url =
-      link.trim();
-
-    if (
-      /\.(m3u8|mp4)(?:\?|$)/i.test(
-        url
-      )
-    ) {
-      output.push(
-        streamObject(
-          base,
-          url
-        )
-      );
-
-      continue;
-    }
-
-    if (
-      /^https?:\/\//i.test(
-        url
-      )
-    ) {
-      console.log(
-        "[kisskh third-party pending extractor]",
-        url.slice(
-          0,
-          180
-        )
-      );
-    }
+  if (!streamUrl) {
+    return [];
   }
 
-  const seen =
-    new Set();
+  return [
+    {
+      name:
+        "KissKH",
 
-  return output.filter(
-    stream => {
-      if (
-        !stream?.url ||
-        seen.has(
-          stream.url
-        )
-      ) {
-        return false;
+      title:
+        `KissKH | ${episode.title}`,
+
+      url:
+        streamUrl,
+
+      behaviorHints: {
+        notWebReady:
+          true,
+
+        bingeGroup:
+          "KissKH"
       }
-
-      seen.add(
-        stream.url
-      );
-
-      return true;
     }
-  );
+  ];
 }
 
 
-function subtitleLanguage(
-  label
+async function resolveSubtitles(
+  ctx
 ) {
-  const value =
-    String(
-      label ||
-      "Unknown"
-    ).trim();
-
-  return value ===
-    "Indonesia"
-    ? "Indonesian"
-    : value;
-}
-
-
-async function resolveSubtitles(ctx) {
   const episode =
     await resolveEpisode(
       ctx
     );
 
-  const base =
-    episode.base;
-
-  const kkey =
-    await fetchKey(
-      SUB_KEY_API,
-      episode.epsId
+  const token =
+    await getToken(
+      episode.base,
+      episode.episodeId,
+      SUB_GUID
     );
 
-  const subtitles =
+  const url =
+    `${episode.base}` +
+    `/api/Sub/` +
+    `${episode.episodeId}` +
+    `?kkey=${encodeURIComponent(token)}`;
+
+  const data =
     await requestJson(
-      `${base}/api/Sub/` +
-      `${episode.epsId}` +
-      `?kkey=${encodeURIComponent(kkey)}`,
-      {
-        headers: {
-          Accept:
-            "application/json, text/plain, */*",
+      url,
+      {},
+      15000
+    );
 
-          Referer:
-            `${base}/`,
+  if (
+    !Array.isArray(
+      data
+    )
+  ) {
+    return [];
+  }
 
-          Origin:
-            base,
+  return data
 
-          "X-Requested-With":
-            "XMLHttpRequest"
-        }
-      },
+    .map(
+      (
+        item,
+        index
+      ) => ({
+        id:
+          `kisskh-${episode.episodeId}-${index}`,
+
+        lang:
+          String(
+            item?.label ||
+            item?.land ||
+            "Unknown"
+          ),
+
+        url:
+          fixUrl(
+            item?.src,
+            episode.base
+          )
+      })
+    )
+
+    .filter(
+      item =>
+        item.url
+    );
+}
+
+
+async function getStreams(ctx) {
+  try {
+    return await memo(
+      streamCache,
+      cacheKey(ctx),
+      STREAM_TTL,
+      () =>
+        resolveStreams(
+          ctx
+        )
+    );
+
+  } catch (error) {
+    console.error(
+      `[kisskh streams] ` +
+      `${error?.message || error}`
+    );
+
+    return [];
+  }
+}
+
+
+async function getSubtitles(ctx) {
+  try {
+    return await memo(
+      subtitleCache,
+      cacheKey(ctx),
+      SUBTITLE_TTL,
+      () =>
+        resolveSubtitles(
+          ctx
+        )
+    );
+
+  } catch (error) {
+    console.error(
+      `[kisskh subtitles] ` +
+      `${error?.message || error}`
+    );
+
+    return [];
+  }
+}
+
+
+module.exports = {
+  name:
+    "KissKH",
+
+  getStreams,
+  getSubtitles
+};
